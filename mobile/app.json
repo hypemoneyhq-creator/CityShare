@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "CityShare",
+    "slug": "cityshare",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.cityshare.app"
+    },
+    "android": {
+      "package": "com.cityshare.app"
+    }
+  }
+}

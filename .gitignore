@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.local
+
+# backend
+backend/dist/
+
+# mobile / expo
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+*.log

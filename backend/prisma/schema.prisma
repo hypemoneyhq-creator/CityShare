@@ -1,0 +1,135 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Identity -----------------------------------------------------------
+// A user may hold Rider and Partner roles simultaneously. Verification
+// (phone + Ghana Card + selfie) is shared between the two roles and is
+// never re-collected; vehicle documents (Partner-only) live separately
+// once the Partner onboarding flow is built.
+
+model User {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  firstName String?
+  lastName  String?
+
+  phoneVerifiedAt     DateTime?
+  ghanaCardNumber     String?
+  ghanaCardVerifiedAt DateTime?
+  selfieVerifiedAt    DateTime?
+
+  isRider   Boolean @default(true)
+  isPartner Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  otps PhoneOtp[]
+}
+
+// One-time SMS codes for phone verification. Kept as its own table (rather
+// than fields on User) because a phone can be re-verified and a user may
+// not exist yet when the first code is requested.
+model PhoneOtp {
+  id         String    @id @default(uuid())
+  phone      String
+  code       String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  user   User?   @relation(fields: [userId], references: [id])
+  userId String?
+
+  @@index([phone])
+}
+
+// --- Corridor / service / stop / run -------------------------------------
+// A corridor is a commuter flow, not a route: one corridor carries several
+// services, and each service has its own stop pattern and timetable. See
+// "CityShare Handoff Spec" section 6.
+
+model Corridor {
+  id          String @id @default(uuid())
+  name        String
+  origin      String
+  destination String
+
+  createdAt DateTime @default(now())
+
+  services Service[]
+}
+
+enum ServiceType {
+  DIRECT
+  STOPS
+}
+
+model Service {
+  id         String      @id @default(uuid())
+  corridor   Corridor    @relation(fields: [corridorId], references: [id])
+  corridorId String
+  code       String
+  name       String
+  type       ServiceType
+  active     Boolean     @default(true)
+
+  stops StopProfile[]
+  runs  Run[]
+
+  @@unique([corridorId, code])
+}
+
+// Coordinates, scheduled times, dwell cap and board/alight rules for one
+// stop on one service. Sequence orders the stops along the service.
+model StopProfile {
+  id        String  @id @default(uuid())
+  service   Service @relation(fields: [serviceId], references: [id])
+  serviceId String
+  name      String
+  sequence  Int
+
+  lat Float
+  lng Float
+
+  // 24-hour, zero-padded, e.g. "06:18" — see design tokens (spec section 10).
+  scheduledArrival   String?
+  scheduledDeparture String?
+
+  maxDwellSeconds Int     @default(180)
+  boardAllowed    Boolean @default(true)
+  alightAllowed   Boolean @default(true)
+
+  @@unique([serviceId, sequence])
+}
+
+enum RunStatus {
+  SCHEDULED
+  ASSIGNED
+  CLOSED_UNASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// A dated instance of a service: an assigned vehicle, driver and manifest.
+model Run {
+  id        String    @id @default(uuid())
+  service   Service   @relation(fields: [serviceId], references: [id])
+  serviceId String
+  date      DateTime
+  status    RunStatus @default(SCHEDULED)
+  vehicleId String?
+  driverId  String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([serviceId, date])
+}
