@@ -29,6 +29,13 @@ inventoryRouter.get(
       const { run, stops, legAvailability } = await getRunSegments(req.params.id);
       res.json({
         run: { id: run.id, date: run.date, status: run.status, capacity: run.capacity },
+        service: {
+          id: run.service.id,
+          code: run.service.code,
+          name: run.service.name,
+          type: run.service.type,
+          flatFareCedis: run.service.flatFareCedis,
+        },
         stops: stops.map((s, i) => ({
           id: s.id,
           name: s.name,

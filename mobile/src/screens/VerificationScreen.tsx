@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { UserProfile } from '../api/client';
 import { useVerification } from '../hooks/useVerification';
+import { useAuth } from '../state/AuthContext';
 import { colors, fonts, radii, spacing } from '../theme/tokens';
 
 // Recreated from CityShare App.dc.html ("Verification" screen, vstep 0-2).
@@ -40,8 +41,9 @@ const STEP_COPY: Record<'phone' | 'identity' | 'done', StepCopy> = {
   },
 };
 
-export function VerificationScreen({ onComplete }: { onComplete: (user: UserProfile) => void }) {
+export function VerificationScreen() {
   const v = useVerification();
+  const { setSession } = useAuth();
   const copy = STEP_COPY[v.step];
 
   const seg2Active = v.step === 'identity' || v.step === 'done';
@@ -68,7 +70,7 @@ export function VerificationScreen({ onComplete }: { onComplete: (user: UserProf
       v.continueFromIdentity();
       return;
     }
-    if (v.user) onComplete(v.user);
+    if (v.user && v.token) setSession({ token: v.token, user: v.user });
   };
 
   return (

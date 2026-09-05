@@ -117,6 +117,7 @@ export function useVerification() {
     loading,
     error,
     user,
+    token,
   };
 }
 

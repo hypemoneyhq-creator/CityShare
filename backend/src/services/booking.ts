@@ -65,7 +65,12 @@ export async function initiateBookingPayment(params: {
 async function loadBookingOrThrow(bookingId: string) {
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    include: { escrow: true, paymentIntent: true, partnerHold: { include: { trip: true } } },
+    include: {
+      escrow: true,
+      paymentIntent: true,
+      runHold: true,
+      partnerHold: { include: { trip: { include: { partner: { select: { firstName: true, lastName: true } } } } } },
+    },
   });
   if (!booking || !booking.escrow) throw new BookingError('not_found', 'Booking not found');
   return booking;

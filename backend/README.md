@@ -1,10 +1,10 @@
 # CityShare backend
 
-Steps 1-4 of the build order from the design handoff: identity & phone
+Steps 1-5 of the build order from the design handoff: identity & phone
 verification, the corridor -> service -> stop -> run data model, seat
-inventory including per-segment Express Stops, and the escrow ledger and
-state machine. Booking/payment/ticketing as a rider-facing flow (step 5)
-is not built — what exists is the machinery step 5 will sit on top of.
+inventory including per-segment Express Stops, the escrow ledger and
+state machine, and the API surface the mobile app's booking flow
+(search -> pay -> ticket) is built against.
 
 ## Stack
 
@@ -38,7 +38,7 @@ The server listens on `PORT` (default 4000).
 | GET | `/api/corridors` | — | List corridors with their active services |
 | GET | `/api/services/:id` | — | One service with its ordered stop profiles |
 | GET | `/api/services/:id/runs?date=YYYY-MM-DD` | — | Runs for a service |
-| GET | `/api/runs/:id/segments` | — | Stops + per-leg seat availability + leg fares for a run |
+| GET | `/api/runs/:id/segments` | — | Stops + per-leg seat availability + leg fares + service info for a run |
 | POST | `/api/runs/:id/holds` | Bearer, verified | Hold seats on a run for a board/alight stop pair |
 | POST | `/api/holds/:id/release` | Bearer | Release a run seat hold before it expires |
 | POST | `/api/partner-trips` | Bearer, verified, Partner | Create a Partner trip listing |
