@@ -124,6 +124,7 @@ function serializeUser(user: {
   isRider: boolean;
   isPartner: boolean;
   isDriver: boolean;
+  isOps: boolean;
 }) {
   return {
     id: user.id,
@@ -133,6 +134,11 @@ function serializeUser(user: {
     isRider: user.isRider,
     isPartner: user.isPartner,
     isDriver: user.isDriver,
+    // Ops accounts are provisioned directly (no self-service "become-ops",
+    // unlike Partner/driver — see README): exposing the flag here just
+    // lets a client like the ops dashboard tell "logged in, not ops" from
+    // "not logged in" without probing an ops-only endpoint for a 403.
+    isOps: user.isOps,
     verification: {
       phoneVerified: Boolean(user.phoneVerifiedAt),
       idVerified: Boolean(user.ghanaCardVerifiedAt && user.selfieVerifiedAt),

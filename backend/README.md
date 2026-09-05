@@ -1,14 +1,15 @@
 # CityShare backend
 
-Steps 1-8 of the build order from the design handoff: identity & phone
+Steps 1-9 of the build order from the design handoff: identity & phone
 verification, the corridor -> service -> stop -> run data model, seat
 inventory including per-segment Express Stops, the escrow ledger and
 state machine, the API surface the mobile app's booking flow is built
 against, GPS-verified two-sided boarding with an offline tap queue, the
-cancellation / reassignment / no-show policy engine, and real driver
-identity driving the Express run lifecycle (assignment, dwell tracking,
+cancellation / reassignment / no-show policy engine, real driver identity
+driving the Express run lifecycle (assignment, dwell tracking,
 depart/no-show, incidents) plus Partner trip management (manifest,
-no-show, earnings).
+no-show, earnings), and the ops dashboard's read layer (live network
+summary, the dispute queue, corridor/stop overview).
 
 ## Stack
 
@@ -81,6 +82,9 @@ The server listens on `PORT` (default 4000).
 | GET | `/api/partner-trips/:id/manifest` | Bearer, owning Partner or ops | Passenger list for one Partner trip |
 | POST | `/api/partner-trips/:id/complete` | Bearer, owning Partner | Mark a Partner trip `COMPLETED` |
 | GET | `/api/partner/earnings` | Bearer | Available/pending/held cedis + recent payouts, resolving any pending payouts first |
+| GET | `/api/ops/summary` | Bearer, ops | Live escrow position, today's run/vehicle status, on-time %, seat utilization, corridor capacity |
+| GET | `/api/ops/disputes` | Bearer, ops | The open boarding-dispute queue with real evidence chips |
+| GET | `/api/ops/corridors` | Bearer, ops | Corridors -> services -> stop profiles, with today's run counts |
 
 ## Data model
 
@@ -319,3 +323,52 @@ Not implemented: cash-out to Mobile Money (the mobile earnings screen
 shows why), and any Operator entity at all — every "Operator" role in
 this step's code is really `User.isPartner`/`isDriver` standing in for
 it, same pattern as `isOps` since step 4.
+
+### Ops dashboard (spec section 9, screens: Live ops / Escrow & disputes / Corridors & stops)
+
+`src/services/ops.ts` is a read layer over data every earlier step
+already produces — no new tables, no new write paths beyond what
+`resolve-dispute` (step 4) already does. Three functions back the three
+tabs in `ops/`:
+
+- **`getLiveSummary`**: the escrow position (held/released-today/
+  disputed cedis) aggregated straight from `Escrow`/`EscrowLedgerEntry` —
+  "released today" dedupes by `escrowId` so a booking that goes
+  RELEASABLE then SETTLED the same day isn't counted twice. Today's
+  "vehicles now" feed derives each run's status line entirely from
+  `RunStopEvent` (arrived-but-not-departed = at that stop boarding,
+  departed = in transit to the next one) — there's no separate
+  vehicle/fleet entity, so this describes the run, not a named van. On-time
+  departure % and seat utilization % are computed for real from today's
+  recorded stop arrivals and bookings, not fabricated network figures.
+  Corridor capacity shows Express seats scheduled vs. Partner seats
+  listed per corridor/service — deliberately labeled *capacity*, not
+  *demand*, since nothing in this codebase logs a search, so there is no
+  real "unfulfilled demand" number to show (the design's version of this
+  screen has one; it isn't reproduced here for that reason).
+- **`getDisputeQueue`**: every currently-`DISPUTED` booking with its
+  most recent ledger entry's evidence surfaced as a claim + chips (which
+  side raised it, whether GPS was unavailable/inconsistent). This is
+  exactly the evidence `tapBoarded`/`denyBoarding`/`openDispute` already
+  write (step 4/6) — nothing new is captured, it's just made legible.
+- **`getCorridorsOverview`**: corridors -> services -> stop profiles with
+  today's run count per service — the same data `/api/corridors` and
+  `/api/services/:id` already expose, reshaped for the ops read (and
+  gated on `requireOps`, unlike those public rider-facing routes).
+
+`GET /api/auth/me` now also returns `isOps` (previously omitted from
+`serializeUser`, unlike `isPartner`/`isDriver`) so a client can tell
+"logged in, not an ops account" from "not logged in" without probing an
+ops-only endpoint for a 403. Ops accounts are still provisioned directly
+— there is deliberately no `become-ops` endpoint, unlike
+`become-partner`/`become-driver`: self-service is fine for roles a user
+grants themselves, not for the role that resolves disputes over their own
+money.
+
+Not implemented: the Express Operator scorecard (ratings, suspend-per-
+corridor) — no Operator entity exists yet (step 10), so there is nothing
+real to show there; a corridor/service editor (the ops dashboard's
+"Corridors & stops" tab is read-only, same as everywhere else schedule
+data is only changed via `prisma/seed.ts` or a migration); and any
+history beyond "today" — every figure in `getLiveSummary` is a same-day
+snapshot, not a time series.

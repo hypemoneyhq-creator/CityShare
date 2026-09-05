@@ -6,6 +6,7 @@ import { bookingsRouter } from './routes/bookings';
 import { corridorsRouter } from './routes/corridors';
 import { driverRouter } from './routes/driver';
 import { inventoryRouter } from './routes/inventory';
+import { opsRouter } from './routes/ops';
 import { partnerTripsRouter } from './routes/partnerTrips';
 
 const app = express();
@@ -19,6 +20,7 @@ app.use('/api', inventoryRouter);
 app.use('/api', partnerTripsRouter);
 app.use('/api', bookingsRouter);
 app.use('/api', driverRouter);
+app.use('/api', opsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'not_found' });
