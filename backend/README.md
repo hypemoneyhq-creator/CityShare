@@ -1,10 +1,10 @@
 # CityShare backend
 
-Steps 1-5 of the build order from the design handoff: identity & phone
+Steps 1-6 of the build order from the design handoff: identity & phone
 verification, the corridor -> service -> stop -> run data model, seat
 inventory including per-segment Express Stops, the escrow ledger and
-state machine, and the API surface the mobile app's booking flow
-(search -> pay -> ticket) is built against.
+state machine, the API surface the mobile app's booking flow is built
+against, and GPS-verified two-sided boarding with an offline tap queue.
 
 ## Stack
 
@@ -49,12 +49,17 @@ The server listens on `PORT` (default 4000).
 | POST | `/api/partner-holds/:id/pay` | Bearer, verified | Same, for a Partner trip hold |
 | GET | `/api/bookings/:id` | Bearer (owner or ops) | Booking + escrow state; advances PENDING/REFUNDING if the mock payment has resolved |
 | GET | `/api/bookings` | Bearer | The caller's own bookings |
-| POST | `/api/bookings/:id/board/driver` | Bearer | Driver-side boarding tap (HELD only) |
-| POST | `/api/bookings/:id/board/rider` | Bearer, rider only | Rider-side boarding tap; both taps -> RELEASABLE |
+| POST | `/api/bookings/:id/board/driver` | Bearer | Driver-side boarding tap: `{lat?, lng?, clientTimestamp?}`, HELD only |
+| POST | `/api/bookings/:id/board/rider` | Bearer, rider only | Rider-side boarding tap; both taps -> RELEASABLE (if GPS matches) or DISPUTED |
+| POST | `/api/bookings/:id/deny-boarding` | Bearer | Driver-side "this passenger did not board" -> DISPUTED |
 | POST | `/api/bookings/:id/dispute` | Bearer, rider only | "I did not board" -> DISPUTED |
+| POST | `/api/bookings/:id/location-pings` | Bearer, rider only | Append a GPS point to the rider's trip-window trail |
+| GET | `/api/bookings/:id/location-pings` | Bearer (owner or ops) | The rider's location trail, for dispute review |
 | POST | `/api/bookings/:id/resolve-dispute` | Bearer, ops | DISPUTED -> RELEASABLE or REFUNDING |
 | POST | `/api/bookings/:id/mark-no-show` | Bearer, ops | HELD -> FORFEIT |
 | POST | `/api/bookings/:id/settle` | Bearer, ops | RELEASABLE/FORFEIT -> SETTLED (pays out for a Partner booking) |
+| GET | `/api/runs/:id/manifest` | — | Paid passengers on a run (driver app data; no driver auth yet) |
+| GET | `/api/ops/stale-boardings?minutes=` | Bearer, ops | HELD bookings the driver boarded but the rider never confirmed |
 
 ## Data model
 
@@ -125,11 +130,9 @@ ledger, steps 9-10).
 hold to a `Booking` + `Escrow`, and holds the two remaining pieces the
 spec calls out explicitly:
 
-- **Boarding is two-sided.** `tapBoarded` only fires the HELD ->
-  RELEASABLE transition once both `driverBoardedAt` and `riderBoardedAt`
-  are set — one tap alone changes nothing. Real GPS sampling and the
-  offline tap queue are step 6; these are bare timestamps for now, on
-  purpose, to keep this invariant testable before that lands.
+- **Boarding is two-sided.** `tapBoarded` only fires once both
+  `driverBoardedAt` and `riderBoardedAt` are set — one tap alone changes
+  nothing.
 - **FORFEIT's payout amount is explicitly unresolved** (spec: "OPEN —
   whether FORFEIT on no-show pays the driver in full, partially, or not
   at all"). `settleBooking` takes `payoutAmountCedis` as a required
@@ -143,3 +146,41 @@ authenticated caller for a Run booking; a Partner booking's tap is
 properly restricted to that trip's Partner, since that identity is real.
 Ops identity is similarly a stub — `User.isOps`, set directly, standing
 in for the access control the ops dashboard (step 9) will actually own.
+
+### Boarding verification and offline queueing (spec section 4)
+
+Once both taps land, `tapBoarded` checks GPS before deciding the outcome
+— it does not just release on two taps. Each tap's coordinates are
+checked against the pickup point's stored coordinates (`StopProfile`
+for a Run, `PartnerTrip.origin*` for a Partner trip) with a 300m
+tolerance (`PICKUP_GPS_TOLERANCE_METERS` in `src/services/geo.ts`, a
+deliberately generous allowance for toll-booth-sized pickup points and
+ordinary phone GPS error — not a spec'd number). Only when both taps are
+present *and within range* does escrow move to RELEASABLE; if GPS is
+missing on either tap or either is outside the tolerance, it moves to
+DISPUTED instead, for ops to review — this is the spec's "must not
+default to either party," implemented as: don't guess, escalate.
+
+The same DISPUTED state also covers the driver's side of "conflict
+handling": `denyBoarding` lets a driver report a passenger who didn't
+show, symmetric to the rider's `openDispute` (spec: "driver taps and
+rider denies, or rider taps and driver denies"). Both land in the exact
+same ops queue as a GPS mismatch — `resolveDispute` from step 4 handles
+all three origins identically, and the ledger evidence records which one
+it was.
+
+**Offline queueing**: every boarding-tap and location-ping endpoint
+accepts an optional `clientTimestamp`. When present, it — not the
+server's receipt time — is what gets stored as `driverBoardedAt`,
+`riderBoardedAt`, or a `LocationPing.recordedAt`. A driver app can queue
+taps made with no signal and submit them once reconnected; the recorded
+time is still the moment of the tap, never the sync (spec section 11).
+There's no actual local queue here (that's the driver app's job, step 8)
+— this is the server-side half of the contract: idempotent-enough
+(re-tapping the same side just overwrites with the same values) and
+indifferent to how late a tap arrives.
+
+**Not built here**: dwell-duration tracking (that's the driver app's
+live countdown, step 8) and any UI at all for the manifest or location
+trail — `GET /runs/:id/manifest` and the stale-boardings query are the
+data those future screens will read.

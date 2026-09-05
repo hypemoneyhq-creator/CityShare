@@ -7,7 +7,11 @@ import { asyncHandler } from '../middleware/asyncHandler';
 import { requireOps } from '../middleware/ops';
 import { requireVerified } from '../middleware/verified';
 import {
+  addLocationPing,
   BookingError,
+  denyBoarding,
+  getLocationTrail,
+  getStaleBoardings,
   initiateBookingPayment,
   markNoShow,
   openDispute,
@@ -116,6 +120,16 @@ bookingsRouter.get(
   }),
 );
 
+// GPS is optional at the type level (a real device might report no fix),
+// which is exactly the "GPS unavailable" case the escrow logic routes to
+// manual review rather than defaulting either way. clientTimestamp
+// supports the offline tap queue — see tapBoarded in services/booking.ts.
+const boardingTapSchema = z.object({
+  lat: z.number().min(-90).max(90).optional(),
+  lng: z.number().min(-180).max(180).optional(),
+  clientTimestamp: z.string().datetime().optional(),
+});
+
 // Driver auth is not built (Express drivers are employed by an Operator —
 // step 8). For a Partner booking the Partner IS identifiable, so that
 // case is checked properly; for a Run (Express) booking this accepts any
@@ -124,6 +138,8 @@ bookingsRouter.post(
   '/bookings/:id/board/driver',
   requireAuth,
   asyncHandler(async (req, res) => {
+    const parsed = boardingTapSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
     const booking = await prisma.booking.findUnique({
       where: { id: req.params.id },
       include: { partnerHold: { include: { trip: true } } },
@@ -133,7 +149,7 @@ bookingsRouter.post(
       return res.status(403).json({ error: 'not_the_driver' });
     }
     try {
-      const updated = await tapBoarded(req.params.id, 'driver');
+      const updated = await tapBoarded(req.params.id, 'driver', parsed.data);
       res.json({ booking: updated });
     } catch (err) {
       handleError(err, res);
@@ -145,14 +161,79 @@ bookingsRouter.post(
   '/bookings/:id/board/rider',
   requireAuth,
   asyncHandler(async (req, res) => {
+    const parsed = boardingTapSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
     const booking = await prisma.booking.findUnique({ where: { id: req.params.id } });
     if (!booking || booking.riderId !== req.userId) return res.status(404).json({ error: 'not_found' });
     try {
-      const updated = await tapBoarded(req.params.id, 'rider');
+      const updated = await tapBoarded(req.params.id, 'rider', parsed.data);
       res.json({ booking: updated });
     } catch (err) {
       handleError(err, res);
     }
+  }),
+);
+
+const denyBoardingSchema = z.object({ reason: z.string().min(1) });
+
+bookingsRouter.post(
+  '/bookings/:id/deny-boarding',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = denyBoardingSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: { partnerHold: { include: { trip: true } } },
+    });
+    if (!booking) return res.status(404).json({ error: 'not_found' });
+    if (booking.kind === BookingKind.PARTNER && booking.partnerHold?.trip.partnerId !== req.userId) {
+      return res.status(403).json({ error: 'not_the_driver' });
+    }
+    try {
+      const updated = await denyBoarding(req.params.id, parsed.data.reason);
+      res.json({ booking: updated });
+    } catch (err) {
+      handleError(err, res);
+    }
+  }),
+);
+
+const locationPingSchema = z.object({
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+  clientTimestamp: z.string().datetime().optional(),
+});
+
+bookingsRouter.post(
+  '/bookings/:id/location-pings',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = locationPingSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
+    try {
+      const ping = await addLocationPing(
+        req.params.id,
+        req.userId!,
+        parsed.data.lat,
+        parsed.data.lng,
+        parsed.data.clientTimestamp,
+      );
+      res.status(201).json({ ping });
+    } catch (err) {
+      handleError(err, res);
+    }
+  }),
+);
+
+bookingsRouter.get(
+  '/bookings/:id/location-pings',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const access = await requireBookingAccess(req.params.id, req.userId!);
+    if (!access) return res.status(404).json({ error: 'not_found' });
+    const trail = await getLocationTrail(req.params.id);
+    res.json({ trail });
   }),
 );
 
@@ -222,5 +303,23 @@ bookingsRouter.post(
     } catch (err) {
       handleError(err, res);
     }
+  }),
+);
+
+// "Ages into the ops queue" (spec section 4) — there's no ops dashboard
+// yet (step 9) to poll this on a schedule, so it's exposed as a query
+// ops can run directly. Defaults to the same 90 minutes as a generous
+// multiple of the pilot's 3-minute max dwell, not a spec'd number.
+const staleQuerySchema = z.object({ minutes: z.coerce.number().int().min(1).max(1440).optional() });
+
+bookingsRouter.get(
+  '/ops/stale-boardings',
+  requireAuth,
+  requireOps,
+  asyncHandler(async (req, res) => {
+    const parsed = staleQuerySchema.safeParse(req.query);
+    if (!parsed.success) return res.status(400).json({ error: 'invalid_query' });
+    const bookings = await getStaleBoardings(parsed.data.minutes ?? 90);
+    res.json({ bookings });
   }),
 );

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { requireVerified } from '../middleware/verified';
+import { getManifestForRun } from '../services/booking';
 import {
   createRunHold,
   getRunSegments,
@@ -82,6 +83,29 @@ inventoryRouter.post(
     } catch (err) {
       handleInventoryError(err, res);
     }
+  }),
+);
+
+// "Driver taps Boarded against a named passenger on the manifest" (spec
+// section 4) — driver auth isn't built (step 8), so this is unauthenticated
+// like the rest of the read-only run endpoints for now.
+inventoryRouter.get(
+  '/runs/:id/manifest',
+  asyncHandler(async (req, res) => {
+    const manifest = await getManifestForRun(req.params.id);
+    res.json({
+      manifest: manifest.map((b) => ({
+        bookingId: b.id,
+        riderName: [b.rider.firstName, b.rider.lastName].filter(Boolean).join(' ') || b.rider.phone,
+        seats: b.runHold?.seats ?? b.seats,
+        boardStopId: b.runHold?.boardStopId,
+        alightStopId: b.runHold?.alightStopId,
+        boardingCode: b.boardingCode,
+        driverBoardedAt: b.driverBoardedAt,
+        riderBoardedAt: b.riderBoardedAt,
+        escrowState: b.escrow?.state,
+      })),
+    });
   }),
 );
 

@@ -6,14 +6,15 @@ certified Express Operators on one marketplace, paid by Mobile Money into
 escrow that only releases once both rider and driver confirm boarding.
 
 This repo is being built from a design handoff following the build order
-in the handoff spec. Current status: **step 5** — booking, payment and
-ticketing as a rider-facing flow.
+in the handoff spec. Current status: **step 6** — boarding verification
+with offline queueing.
 
 - [`backend/`](backend/README.md) — Node.js/TypeScript/Express API +
   PostgreSQL (Prisma): phone + Ghana Card verification, corridor/service/
   stop/run model, per-segment seat inventory and holds for both Express
-  and Partner trips, and the escrow ledger/state machine with a mock
-  MoMo payment provider behind it.
+  and Partner trips, the escrow ledger/state machine with a mock MoMo
+  payment provider behind it, and GPS-verified two-sided boarding with
+  an offline-safe tap queue.
 - [`mobile/`](mobile/README.md) — Expo/React Native rider app: phone/ID
   verification, then search → results → trip detail → pay → digital
   ticket, all wired to the real backend and recreated at high fidelity
@@ -28,7 +29,9 @@ ticketing as a rider-facing flow.
    provider step 5 calls for)
 5. **Booking, payment, ticketing as a rider-facing flow** ✅ (mobile:
    search, results, trip detail, pay, digital ticket)
-6. Boarding verification with offline queueing
+6. **Boarding verification with offline queueing** ✅ (backend: GPS
+   geofence check on both taps, driver-side deny-boarding, rider location
+   trail, per-run manifest, offline-preserved tap timestamps)
 7. Cancellation / reassignment / no-show policy engine
 8. Driver app (Express) and Partner trip management
 9. Ops dashboard
