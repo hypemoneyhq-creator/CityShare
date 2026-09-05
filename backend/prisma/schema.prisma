@@ -30,7 +30,10 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  otps PhoneOtp[]
+  otps               PhoneOtp[]
+  seatHolds          SeatHold[]
+  partnerTrips       PartnerTrip[]
+  partnerSeatHolds   PartnerSeatHold[]
 }
 
 // One-time SMS codes for phone verification. Kept as its own table (rather
@@ -64,7 +67,8 @@ model Corridor {
 
   createdAt DateTime @default(now())
 
-  services Service[]
+  services     Service[]
+  partnerTrips PartnerTrip[]
 }
 
 enum ServiceType {
@@ -80,6 +84,11 @@ model Service {
   name       String
   type       ServiceType
   active     Boolean     @default(true)
+
+  // One published fare per seat (spec section 2). DIRECT services quote a
+  // single flat fare; STOPS services quote per leg via StopProfile.legFareCedis
+  // and this is left null.
+  flatFareCedis Int?
 
   stops StopProfile[]
   runs  Run[]
@@ -107,6 +116,11 @@ model StopProfile {
   boardAllowed    Boolean @default(true)
   alightAllowed   Boolean @default(true)
 
+  // Fare for the leg ENDING at this stop (i.e. from the previous stop to
+  // this one). Null on the first stop, which has no preceding leg. Only
+  // used by STOPS services — see Service.flatFareCedis for DIRECT.
+  legFareCedis Int?
+
   @@unique([serviceId, sequence])
 }
 
@@ -129,7 +143,104 @@ model Run {
   vehicleId String?
   driverId  String?
 
+  // Total vehicle seats. Availability is derived per leg from SeatHold
+  // records against this capacity — see src/services/inventory.ts.
+  capacity Int
+
   createdAt DateTime @default(now())
 
+  holds SeatHold[]
+
   @@unique([serviceId, date])
+}
+
+enum HoldStatus {
+  PENDING
+  CONFIRMED
+  RELEASED
+  EXPIRED
+}
+
+// A seat (or seats) held against one leg-range of a Run. Express Stops
+// sells per leg (spec section 2): a hold spans every leg between its
+// board and alight stop, and inventory for any single leg is capacity
+// minus the seats of every hold whose range covers that leg — see
+// getLegAvailability in src/services/inventory.ts.
+//
+// PENDING holds expire 5 minutes after creation and are lazily reaped
+// (flipped to EXPIRED) the next time availability is computed; there is
+// no background sweep yet.
+model SeatHold {
+  id      String @id @default(uuid())
+  run     Run    @relation(fields: [runId], references: [id])
+  runId   String
+
+  boardStopId  String
+  alightStopId String
+
+  seats  Int
+  status HoldStatus @default(PENDING)
+
+  rider   User   @relation(fields: [riderId], references: [id])
+  riderId String
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([runId, status])
+}
+
+// --- Partner trips --------------------------------------------------------
+// An individual listing 1-4 seats on a journey they are already making
+// (spec section 1/2). Single leg only — no per-segment inventory, unlike
+// Express Stops. Partner onboarding (vehicle documents, comfort facts
+// capture) is not built yet; isPartner is set directly for now.
+model PartnerTrip {
+  id        String   @id @default(uuid())
+  partner   User     @relation(fields: [partnerId], references: [id])
+  partnerId String
+
+  corridor   Corridor? @relation(fields: [corridorId], references: [id])
+  corridorId String?
+
+  originName      String
+  originLat       Float
+  originLng       Float
+  destinationName String
+  destLat         Float
+  destLng         Float
+
+  departAt DateTime
+
+  // The driver's own seat is never sellable (spec section 2) — this is
+  // passenger seats only, capped at 4 by onboarding (not yet built).
+  seatsTotal       Int
+  farePerSeatCedis Int
+
+  vehicleDescription String
+  comfortAc          Boolean @default(false)
+  comfortUsb         Boolean @default(false)
+  comfortBoot        Boolean @default(false)
+
+  status    RunStatus @default(SCHEDULED)
+  createdAt DateTime  @default(now())
+
+  holds PartnerSeatHold[]
+}
+
+model PartnerSeatHold {
+  id      String      @id @default(uuid())
+  trip    PartnerTrip @relation(fields: [tripId], references: [id])
+  tripId  String
+
+  seats  Int
+  status HoldStatus @default(PENDING)
+
+  rider   User   @relation(fields: [riderId], references: [id])
+  riderId String
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([tripId, status])
 }

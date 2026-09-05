@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
+import { asyncHandler } from '../middleware/asyncHandler';
 import { issueSessionToken } from '../services/jwt';
 import { startPhoneVerification, verifyPhoneCode } from '../services/otp';
 
@@ -9,36 +10,42 @@ export const authRouter = Router();
 
 const phoneSchema = z.object({ phone: z.string().regex(/^\+\d{7,15}$/) });
 
-authRouter.post('/phone/start', async (req, res) => {
-  const parsed = phoneSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'invalid_phone' });
+authRouter.post(
+  '/phone/start',
+  asyncHandler(async (req, res) => {
+    const parsed = phoneSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'invalid_phone' });
 
-  const { devCode } = await startPhoneVerification(parsed.data.phone);
-  res.json({ sent: true, devCode });
-});
+    const { devCode } = await startPhoneVerification(parsed.data.phone);
+    res.json({ sent: true, devCode });
+  }),
+);
 
 const verifyPhoneSchema = phoneSchema.extend({ code: z.string().length(4) });
 
 // Verifying the phone code both confirms the number and logs the rider in:
 // there is no separate password step (see spec section 8 — phone + Ghana
 // Card is the whole identity story for a Rider).
-authRouter.post('/phone/verify', async (req, res) => {
-  const parsed = verifyPhoneSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
-  const { phone, code } = parsed.data;
+authRouter.post(
+  '/phone/verify',
+  asyncHandler(async (req, res) => {
+    const parsed = verifyPhoneSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
+    const { phone, code } = parsed.data;
 
-  const result = await verifyPhoneCode(phone, code);
-  if (!result.ok) return res.status(400).json({ error: result.reason });
+    const result = await verifyPhoneCode(phone, code);
+    if (!result.ok) return res.status(400).json({ error: result.reason });
 
-  const user = await prisma.user.upsert({
-    where: { phone },
-    update: { phoneVerifiedAt: new Date() },
-    create: { phone, phoneVerifiedAt: new Date() },
-  });
+    const user = await prisma.user.upsert({
+      where: { phone },
+      update: { phoneVerifiedAt: new Date() },
+      create: { phone, phoneVerifiedAt: new Date() },
+    });
 
-  const token = issueSessionToken({ userId: user.id });
-  res.json({ token, user: serializeUser(user) });
-});
+    const token = issueSessionToken({ userId: user.id });
+    res.json({ token, user: serializeUser(user) });
+  }),
+);
 
 const identitySchema = z.object({
   // e.g. "GHA-724812190-4" — loose on purpose; the real format needs a
@@ -51,28 +58,49 @@ const identitySchema = z.object({
 // blocker #3. This mocks an instant match so the seat-inventory and
 // booking flows downstream have a "verified" user to work with; swapping
 // in a real verification provider does not change this route's contract.
-authRouter.post('/identity', requireAuth, async (req, res) => {
-  const parsed = identitySchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
+authRouter.post(
+  '/identity',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = identitySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
 
-  const now = new Date();
-  const user = await prisma.user.update({
-    where: { id: req.userId },
-    data: {
-      ghanaCardNumber: parsed.data.ghanaCardNumber,
-      ghanaCardVerifiedAt: now,
-      selfieVerifiedAt: now,
-    },
-  });
+    const now = new Date();
+    const user = await prisma.user.update({
+      where: { id: req.userId },
+      data: {
+        ghanaCardNumber: parsed.data.ghanaCardNumber,
+        ghanaCardVerifiedAt: now,
+        selfieVerifiedAt: now,
+      },
+    });
 
-  res.json({ user: serializeUser(user) });
-});
+    res.json({ user: serializeUser(user) });
+  }),
+);
 
-authRouter.get('/me', requireAuth, async (req, res) => {
-  const user = await prisma.user.findUnique({ where: { id: req.userId } });
-  if (!user) return res.status(404).json({ error: 'not_found' });
-  res.json({ user: serializeUser(user) });
-});
+authRouter.get(
+  '/me',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = await prisma.user.findUnique({ where: { id: req.userId } });
+    if (!user) return res.status(404).json({ error: 'not_found' });
+    res.json({ user: serializeUser(user) });
+  }),
+);
+
+// Stand-in for Partner onboarding (vehicle documents, Safety Standard
+// agreement — see README screens table), which is not built yet. This
+// exists so Partner trips are exercisable now; a real onboarding flow
+// will set isPartner as its last step instead of a direct client call.
+authRouter.post(
+  '/become-partner',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = await prisma.user.update({ where: { id: req.userId }, data: { isPartner: true } });
+    res.json({ user: serializeUser(user) });
+  }),
+);
 
 function serializeUser(user: {
   id: string;

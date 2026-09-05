@@ -6,12 +6,13 @@ certified Express Operators on one marketplace, paid by Mobile Money into
 escrow that only releases once both rider and driver confirm boarding.
 
 This repo is being built from a design handoff following the build order
-in the handoff spec. Current status: **step 1** — identity/phone
-verification and the corridor -> service -> stop -> run data model.
+in the handoff spec. Current status: **step 3** — seat inventory,
+including per-segment Express Stops.
 
 - [`backend/`](backend/README.md) — Node.js/TypeScript/Express API +
   PostgreSQL (Prisma): phone + Ghana Card verification, corridor/service/
-  stop/run model.
+  stop/run model, per-segment seat inventory and holds for both Express
+  and Partner trips.
 - [`mobile/`](mobile/README.md) — Expo/React Native rider app. Currently
   just the verification flow, recreated at high fidelity from the design.
 
@@ -19,7 +20,7 @@ verification and the corridor -> service -> stop -> run data model.
 
 1. **Identity and verification** ✅ (backend + mobile screen)
 2. **Corridor / service / stop / run model** ✅ (backend)
-3. Seat inventory, including per-segment Express Stops
+3. **Seat inventory, including per-segment Express Stops** ✅ (backend)
 4. Escrow ledger and state machine
 5. Booking, payment, ticketing (against a mock payment provider)
 6. Boarding verification with offline queueing

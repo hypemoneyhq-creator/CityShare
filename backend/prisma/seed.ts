@@ -11,12 +11,14 @@ async function main() {
     data: { name: 'Western', origin: 'Kasoa', destination: 'Circle' },
   });
 
+  // Flat fare, matching the design's Express Direct example (18 cedis).
   const k01 = await prisma.service.create({
     data: {
       corridorId: western.id,
       code: 'K01',
       name: 'Express Direct',
       type: ServiceType.DIRECT,
+      flatFareCedis: 18,
       stops: {
         create: [
           {
@@ -42,6 +44,7 @@ async function main() {
     },
   });
 
+  // Per-leg fares, matching the design's stopFare example (6 / 4 / 4 cedis).
   const k02 = await prisma.service.create({
     data: {
       corridorId: western.id,
@@ -68,6 +71,7 @@ async function main() {
             scheduledDeparture: '06:43',
             boardAllowed: true,
             alightAllowed: true,
+            legFareCedis: 6,
           },
           {
             name: 'Kaneshie',
@@ -78,6 +82,7 @@ async function main() {
             scheduledDeparture: '07:03',
             boardAllowed: true,
             alightAllowed: true,
+            legFareCedis: 4,
           },
           {
             name: 'Circle',
@@ -87,6 +92,7 @@ async function main() {
             scheduledArrival: '07:15',
             boardAllowed: false,
             alightAllowed: true,
+            legFareCedis: 4,
           },
         ],
       },
@@ -96,14 +102,49 @@ async function main() {
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
 
+  // 11-seater Hyundai H1s on both Express services, matching the design copy.
   await prisma.run.createMany({
     data: [
-      { serviceId: k01.id, date: today },
-      { serviceId: k02.id, date: today },
+      { serviceId: k01.id, date: today, capacity: 11 },
+      { serviceId: k02.id, date: today, capacity: 11 },
     ],
   });
 
-  console.log(`Seeded corridor "${western.name}" with services ${k01.code}, ${k02.code}.`);
+  // A Partner trip on the same corridor, matching the design's Partner card
+  // example: Kwame A., Toyota Corolla, 4 seats, 20 cedis, Total Kasoa Toll.
+  const kwame = await prisma.user.create({
+    data: {
+      phone: '+233241110001',
+      firstName: 'Kwame',
+      lastName: 'Asante',
+      phoneVerifiedAt: new Date(),
+      ghanaCardVerifiedAt: new Date(),
+      selfieVerifiedAt: new Date(),
+      isPartner: true,
+    },
+  });
+
+  await prisma.partnerTrip.create({
+    data: {
+      partnerId: kwame.id,
+      corridorId: western.id,
+      originName: 'Total Kasoa Toll',
+      originLat: 5.5301,
+      originLng: -0.4231,
+      destinationName: 'Circle',
+      destLat: 5.5717,
+      destLng: -0.2107,
+      departAt: new Date(today.getTime() + 6.5 * 60 * 60 * 1000), // 06:30
+      seatsTotal: 4,
+      farePerSeatCedis: 20,
+      vehicleDescription: 'Toyota Corolla · silver',
+      comfortAc: true,
+      comfortUsb: true,
+      comfortBoot: true,
+    },
+  });
+
+  console.log(`Seeded corridor "${western.name}" with services ${k01.code}, ${k02.code}, and a Partner trip.`);
 }
 
 main()
