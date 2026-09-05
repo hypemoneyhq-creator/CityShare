@@ -16,10 +16,28 @@ import { colors, fonts, radii, spacing } from '../theme/tokens';
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 
 export function SearchHomeScreen({ navigation }: Props) {
-  const { session } = useAuth();
+  const { session, setSession } = useAuth();
   const [corridor, setCorridor] = useState<Corridor | undefined>();
   const [seats, setSeats] = useState(1);
   const [loading, setLoading] = useState(true);
+
+  async function goPartnerMode() {
+    if (!session) return;
+    if (!session.user.isPartner) {
+      const res = await api.becomePartner(session.token);
+      setSession({ token: session.token, user: res.user });
+    }
+    navigation.navigate('PartnerHome');
+  }
+
+  async function goDriverMode() {
+    if (!session) return;
+    if (!session.user.isDriver) {
+      const res = await api.becomeDriver(session.token);
+      setSession({ token: session.token, user: res.user });
+    }
+    navigation.navigate('DriverShift');
+  }
 
   useEffect(() => {
     api
@@ -99,6 +117,15 @@ export function SearchHomeScreen({ navigation }: Props) {
           )}
         </View>
       </View>
+
+      <View style={styles.modeRow}>
+        <Pressable style={styles.modeBtn} onPress={goPartnerMode}>
+          <Text style={styles.modeBtnText}>{session?.user.isPartner ? 'Partner mode' : 'Become a Partner'}</Text>
+        </Pressable>
+        <Pressable style={styles.modeBtn} onPress={goDriverMode}>
+          <Text style={styles.modeBtnText}>{session?.user.isDriver ? 'Driver mode' : 'Become a driver'}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -141,4 +168,14 @@ const styles = StyleSheet.create({
   stepperBtn: { fontFamily: fonts.displayMedium, fontSize: 18, color: colors.ink, paddingHorizontal: 4 },
   findButton: { padding: 16, backgroundColor: colors.shareGreen, alignItems: 'center' },
   findButtonText: { fontFamily: fonts.displaySemiBold, fontSize: 15, color: '#fff' },
+  modeRow: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.lg, marginTop: spacing.lg },
+  modeBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#D8D7D1',
+    borderRadius: radii.card,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  modeBtnText: { fontFamily: fonts.displayMedium, fontSize: 13, color: colors.ink },
 });

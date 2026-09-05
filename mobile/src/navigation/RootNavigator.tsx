@@ -7,6 +7,14 @@ import { ResultsScreen } from '../screens/ResultsScreen';
 import { TripDetailScreen } from '../screens/TripDetailScreen';
 import { PaymentScreen } from '../screens/PaymentScreen';
 import { TicketScreen } from '../screens/TicketScreen';
+import { PartnerHomeScreen } from '../screens/PartnerHomeScreen';
+import { PartnerCreateTripScreen } from '../screens/PartnerCreateTripScreen';
+import { PartnerPassengerListScreen } from '../screens/PartnerPassengerListScreen';
+import { PartnerEarningsScreen } from '../screens/PartnerEarningsScreen';
+import { DriverShiftScreen } from '../screens/DriverShiftScreen';
+import { DriverStopScreen } from '../screens/DriverStopScreen';
+import { DriverEnRouteScreen } from '../screens/DriverEnRouteScreen';
+import { DriverRunCompleteScreen } from '../screens/DriverRunCompleteScreen';
 import { colors } from '../theme/tokens';
 import { RootStackParamList } from './types';
 
@@ -35,6 +43,14 @@ export function RootNavigator() {
             <Stack.Screen name="TripDetail" component={TripDetailScreen} />
             <Stack.Screen name="Payment" component={PaymentScreen} />
             <Stack.Screen name="Ticket" component={TicketScreen} />
+            <Stack.Screen name="PartnerHome" component={PartnerHomeScreen} />
+            <Stack.Screen name="PartnerCreateTrip" component={PartnerCreateTripScreen} />
+            <Stack.Screen name="PartnerPassengerList" component={PartnerPassengerListScreen} />
+            <Stack.Screen name="PartnerEarnings" component={PartnerEarningsScreen} />
+            <Stack.Screen name="DriverShift" component={DriverShiftScreen} />
+            <Stack.Screen name="DriverStop" component={DriverStopScreen} />
+            <Stack.Screen name="DriverEnRoute" component={DriverEnRouteScreen} />
+            <Stack.Screen name="DriverRunComplete" component={DriverRunCompleteScreen} />
           </>
         )}
       </Stack.Navigator>

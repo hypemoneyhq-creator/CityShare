@@ -11,6 +11,7 @@ import {
   InventoryError,
   releasePartnerHold,
 } from '../services/inventory';
+import * as paymentProvider from '../services/paymentProvider';
 
 export const partnerTripsRouter = Router();
 
@@ -80,6 +81,106 @@ partnerTripsRouter.get(
       trips.map(async (trip) => ({ trip, availableSeats: await getPartnerTripAvailability(trip.id) })),
     );
     res.json({ trips: withAvailability });
+  }),
+);
+
+// "Partner home" (spec screens table) — a Partner's own trips, each with
+// how many of its seats are booked.
+partnerTripsRouter.get(
+  '/partner-trips/mine',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const trips = await prisma.partnerTrip.findMany({
+      where: { partnerId: req.userId },
+      orderBy: { departAt: 'desc' },
+    });
+    const withAvailability = await Promise.all(
+      trips.map(async (trip) => ({
+        trip,
+        availableSeats: await getPartnerTripAvailability(trip.id),
+      })),
+    );
+    res.json({ trips: withAvailability });
+  }),
+);
+
+// "Passenger list" (spec screens table) — same shape as the Run
+// manifest, for the Partner's own trip.
+partnerTripsRouter.get(
+  '/partner-trips/:id/manifest',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const trip = await prisma.partnerTrip.findUnique({ where: { id: req.params.id } });
+    if (!trip) return res.status(404).json({ error: 'not_found' });
+    if (trip.partnerId !== req.userId) {
+      const user = await prisma.user.findUnique({ where: { id: req.userId } });
+      if (!user?.isOps) return res.status(403).json({ error: 'not_the_partner' });
+    }
+
+    const bookings = await prisma.booking.findMany({
+      where: { partnerHold: { tripId: req.params.id }, escrow: { state: { in: ['HELD', 'RELEASABLE'] } } },
+      include: { rider: { select: { firstName: true, lastName: true, phone: true } }, escrow: true },
+    });
+
+    res.json({
+      manifest: bookings.map((b) => ({
+        bookingId: b.id,
+        riderName: [b.rider.firstName, b.rider.lastName].filter(Boolean).join(' ') || b.rider.phone,
+        seats: b.seats,
+        boardingCode: b.boardingCode,
+        driverBoardedAt: b.driverBoardedAt,
+        riderBoardedAt: b.riderBoardedAt,
+        escrowState: b.escrow?.state,
+      })),
+    });
+  }),
+);
+
+partnerTripsRouter.post(
+  '/partner-trips/:id/complete',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const trip = await prisma.partnerTrip.findUnique({ where: { id: req.params.id } });
+    if (!trip) return res.status(404).json({ error: 'not_found' });
+    if (trip.partnerId !== req.userId) return res.status(403).json({ error: 'not_the_partner' });
+    const updated = await prisma.partnerTrip.update({ where: { id: req.params.id }, data: { status: 'COMPLETED' } });
+    res.json({ trip: updated });
+  }),
+);
+
+// "Earnings" (spec screens table). Real figures from Payout and Escrow —
+// no commission rate is shown, because none has been decided (Operator
+// revenue shares are marked "to be agreed" in the spec, and nothing
+// analogous exists for Partners either).
+partnerTripsRouter.get(
+  '/partner/earnings',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    // Payouts resolve lazily like every other mock-provider outcome, but
+    // nothing else polls them the way GET /bookings/:id polls payments
+    // and refunds — do it here so a settled payout doesn't sit PENDING
+    // forever just because no one asked.
+    const unresolvedPayouts = await prisma.payout.findMany({
+      where: { payeeId: req.userId, status: 'PENDING' },
+    });
+    await Promise.all(unresolvedPayouts.map((p) => paymentProvider.getPayoutStatus(p.id)));
+
+    const [approvedPayouts, pendingPayouts, heldBookings, recentPayouts] = await Promise.all([
+      prisma.payout.aggregate({ where: { payeeId: req.userId, status: 'APPROVED' }, _sum: { amountCedis: true } }),
+      prisma.payout.aggregate({ where: { payeeId: req.userId, status: 'PENDING' }, _sum: { amountCedis: true } }),
+      prisma.booking.findMany({
+        where: { partnerHold: { trip: { partnerId: req.userId } }, escrow: { state: { in: ['HELD', 'RELEASABLE'] } } },
+        select: { fareCedis: true },
+      }),
+      prisma.payout.findMany({ where: { payeeId: req.userId }, orderBy: { createdAt: 'desc' }, take: 10 }),
+    ]);
+
+    res.json({
+      availableCedis: approvedPayouts._sum.amountCedis ?? 0,
+      pendingPayoutCedis: pendingPayouts._sum.amountCedis ?? 0,
+      heldInEscrowCedis: heldBookings.reduce((sum, b) => sum + b.fareCedis, 0),
+      recentPayouts,
+    });
   }),
 );
 

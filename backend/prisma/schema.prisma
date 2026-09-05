@@ -30,6 +30,11 @@ model User {
   // Ops-only escrow actions (resolving a dispute, marking a no-show,
   // settling) are gated on this flag directly for now.
   isOps     Boolean @default(false)
+  // Stand-in for Express driver identity (spec: drivers are employed by
+  // an Operator, vetted through them, not independently onboarded — but
+  // Operators are step 10). Set directly, like isPartner/isOps, until
+  // that onboarding exists.
+  isDriver  Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -40,6 +45,7 @@ model User {
   partnerSeatHolds PartnerSeatHold[]
   paymentIntents   PaymentIntent[]
   bookings         Booking[]
+  assignedRuns     Run[]             @relation("RunDriver")
 }
 
 // One-time SMS codes for phone verification. Kept as its own table (rather
@@ -147,7 +153,9 @@ model Run {
   date      DateTime
   status    RunStatus @default(SCHEDULED)
   vehicleId String?
-  driverId  String?
+
+  driver   User?   @relation("RunDriver", fields: [driverId], references: [id])
+  driverId String?
 
   // Total vehicle seats. Availability is derived per leg from SeatHold
   // records against this capacity — see src/services/inventory.ts.
@@ -155,9 +163,45 @@ model Run {
 
   createdAt DateTime @default(now())
 
-  holds SeatHold[]
+  holds      SeatHold[]
+  stopEvents RunStopEvent[]
+  incidents  RunIncident[]
 
   @@unique([serviceId, date])
+}
+
+// A driver's arrival/departure at one stop on one run — what drives the
+// dwell countdown (spec section 6: "maximum dwell is 3 minutes... a cap,
+// not a negotiation, enforced in the driver app by a visible countdown")
+// and the stop-by-stop on-time record on the run-complete screen.
+// clientTimestamp-aware like everything else driver-tapped, for the same
+// offline reason.
+model RunStopEvent {
+  id          String    @id @default(uuid())
+  run         Run       @relation(fields: [runId], references: [id])
+  runId       String
+  stopId      String
+  arrivedAt   DateTime?
+  departedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([runId, stopId])
+}
+
+// "An incident report sheet that pushes position and manifest to ops"
+// (spec section 8 screens). There's no ops dashboard yet to push to
+// (step 9) — this is just the record it will read.
+model RunIncident {
+  id        String   @id @default(uuid())
+  run       Run      @relation(fields: [runId], references: [id])
+  runId     String
+  category  String
+  note      String?
+  lat       Float?
+  lng       Float?
+  createdAt DateTime @default(now())
+
+  @@index([runId])
 }
 
 enum HoldStatus {

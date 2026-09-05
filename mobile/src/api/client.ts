@@ -33,6 +33,7 @@ export interface UserProfile {
   lastName: string | null;
   isRider: boolean;
   isPartner: boolean;
+  isDriver: boolean;
   verification: VerificationStatus;
 }
 
@@ -73,6 +74,9 @@ export interface RunStop {
   id: string;
   name: string;
   sequence: number;
+  lat: number;
+  lng: number;
+  maxDwellSeconds: number;
   scheduledArrival: string | null;
   scheduledDeparture: string | null;
   boardAllowed: boolean;
@@ -163,6 +167,40 @@ export interface Booking {
 
 export type ForceOutcome = 'APPROVED' | 'DECLINED' | 'TIMEOUT';
 
+export interface ManifestEntry {
+  bookingId: string;
+  riderName: string;
+  seats: number;
+  boardStopId?: string;
+  alightStopId?: string;
+  boardingCode: string | null;
+  driverBoardedAt: string | null;
+  riderBoardedAt: string | null;
+  escrowState: EscrowState;
+}
+
+export interface Earnings {
+  availableCedis: number;
+  pendingPayoutCedis: number;
+  heldInEscrowCedis: number;
+  recentPayouts: { id: string; amountCedis: number; status: string; reference: string; createdAt: string }[];
+}
+
+export interface DriverRun extends Run {
+  service: Service & { corridor: Corridor; stops: RunStop[] };
+  seatsSold: number;
+}
+
+export interface DwellStatus {
+  stop: RunStop & { maxDwellSeconds: number };
+  arrivedAt: string | null;
+  departedAt: string | null;
+  maxDwellSeconds: number;
+  remainingSeconds: number | null;
+}
+
+export type IncidentCategory = 'heavy_traffic' | 'vehicle_fault' | 'stop_blocked' | 'passenger_issue' | 'accident_sos';
+
 export const api = {
   startPhoneVerification: (phone: string) =>
     request<{ sent: true; devCode?: string }>('/api/auth/phone/start', {
@@ -226,4 +264,91 @@ export const api = {
     ),
 
   getBooking: (token: string, bookingId: string) => request<{ booking: Booking }>(`/api/bookings/${bookingId}`, {}, token),
+
+  becomePartner: (token: string) => request<{ user: UserProfile }>('/api/auth/become-partner', { method: 'POST' }, token),
+  becomeDriver: (token: string) => request<{ user: UserProfile }>('/api/auth/become-driver', { method: 'POST' }, token),
+
+  // --- Partner mode ---
+
+  createPartnerTrip: (
+    token: string,
+    input: {
+      corridorId?: string;
+      originName: string;
+      originLat: number;
+      originLng: number;
+      destinationName: string;
+      destLat: number;
+      destLng: number;
+      departAt: string;
+      seatsTotal: number;
+      farePerSeatCedis: number;
+      vehicleDescription: string;
+      comfortAc?: boolean;
+      comfortUsb?: boolean;
+      comfortBoot?: boolean;
+    },
+  ) => request<{ trip: PartnerTrip }>('/api/partner-trips', { method: 'POST', body: JSON.stringify(input) }, token),
+
+  getMyPartnerTrips: (token: string) =>
+    request<{ trips: { trip: PartnerTrip; availableSeats: number }[] }>('/api/partner-trips/mine', {}, token),
+
+  getPartnerTripManifest: (token: string, tripId: string) =>
+    request<{ manifest: ManifestEntry[] }>(`/api/partner-trips/${tripId}/manifest`, {}, token),
+
+  completePartnerTrip: (token: string, tripId: string) =>
+    request<{ trip: PartnerTrip }>(`/api/partner-trips/${tripId}/complete`, { method: 'POST' }, token),
+
+  getPartnerEarnings: (token: string) => request<Earnings>('/api/partner/earnings', {}, token),
+
+  markNoShow: (token: string, bookingId: string) =>
+    request<{ booking: Booking }>(`/api/bookings/${bookingId}/mark-no-show`, { method: 'POST' }, token),
+
+  // --- Express driver app ---
+
+  getDriverRuns: (token: string) => request<{ runs: DriverRun[] }>('/api/driver/runs', {}, token),
+
+  getRunManifest: (runId: string) => request<{ manifest: ManifestEntry[] }>(`/api/runs/${runId}/manifest`),
+
+  startRun: (token: string, runId: string) => request<{ run: Run }>(`/api/runs/${runId}/start`, { method: 'POST' }, token),
+
+  arriveAtStop: (token: string, runId: string, stopId: string, clientTimestamp?: string) =>
+    request(
+      `/api/runs/${runId}/stops/${stopId}/arrive`,
+      { method: 'POST', body: JSON.stringify(clientTimestamp ? { clientTimestamp } : {}) },
+      token,
+    ),
+
+  getDwellStatus: (runId: string, stopId: string) => request<DwellStatus>(`/api/runs/${runId}/stops/${stopId}/dwell`),
+
+  departStop: (token: string, runId: string, stopId: string, markNoShowForUnboarded: boolean) =>
+    request<{ markedNoShow: number }>(
+      `/api/runs/${runId}/stops/${stopId}/depart`,
+      { method: 'POST', body: JSON.stringify({ markNoShowForUnboarded }) },
+      token,
+    ),
+
+  reportIncident: (token: string, runId: string, category: IncidentCategory, note?: string) =>
+    request(`/api/runs/${runId}/incidents`, { method: 'POST', body: JSON.stringify({ category, note }) }, token),
+
+  completeRun: (token: string, runId: string) =>
+    request<{ stopRecord: { stopName: string; scheduled: string | null; arrivedAt: string | null }[]; seatsCarried: number; noShows: number }>(
+      `/api/runs/${runId}/complete`,
+      { method: 'POST' },
+      token,
+    ),
+
+  boardDriver: (token: string, bookingId: string, lat?: number, lng?: number) =>
+    request<{ booking: Booking }>(
+      `/api/bookings/${bookingId}/board/driver`,
+      { method: 'POST', body: JSON.stringify({ lat, lng }) },
+      token,
+    ),
+
+  denyBoarding: (token: string, bookingId: string, reason: string) =>
+    request<{ booking: Booking }>(
+      `/api/bookings/${bookingId}/deny-boarding`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+      token,
+    ),
 };

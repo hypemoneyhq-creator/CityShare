@@ -102,6 +102,17 @@ authRouter.post(
   }),
 );
 
+// Stand-in for Express driver vetting (spec: drivers are vetted through
+// their Operator, not independently onboarded — Operators are step 10).
+authRouter.post(
+  '/become-driver',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = await prisma.user.update({ where: { id: req.userId }, data: { isDriver: true } });
+    res.json({ user: serializeUser(user) });
+  }),
+);
+
 function serializeUser(user: {
   id: string;
   phone: string;
@@ -112,6 +123,7 @@ function serializeUser(user: {
   selfieVerifiedAt: Date | null;
   isRider: boolean;
   isPartner: boolean;
+  isDriver: boolean;
 }) {
   return {
     id: user.id,
@@ -120,6 +132,7 @@ function serializeUser(user: {
     lastName: user.lastName,
     isRider: user.isRider,
     isPartner: user.isPartner,
+    isDriver: user.isDriver,
     verification: {
       phoneVerified: Boolean(user.phoneVerifiedAt),
       idVerified: Boolean(user.ghanaCardVerifiedAt && user.selfieVerifiedAt),

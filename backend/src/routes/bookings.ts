@@ -1,4 +1,4 @@
-import { BookingKind, PaymentOutcome } from '@prisma/client';
+import { BookingKind, EscrowActorType, PaymentOutcome } from '@prisma/client';
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db';
@@ -149,10 +149,16 @@ bookingsRouter.post(
     if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
     const booking = await prisma.booking.findUnique({
       where: { id: req.params.id },
-      include: { partnerHold: { include: { trip: true } } },
+      include: { partnerHold: { include: { trip: true } }, runHold: { include: { run: true } } },
     });
     if (!booking) return res.status(404).json({ error: 'not_found' });
     if (booking.kind === BookingKind.PARTNER && booking.partnerHold?.trip.partnerId !== req.userId) {
+      return res.status(403).json({ error: 'not_the_driver' });
+    }
+    // Once a run has an assigned driver, only they can tap its manifest.
+    // Before assignment (or for runs no driver UI has touched yet), any
+    // authenticated caller is still accepted as a stand-in.
+    if (booking.kind === BookingKind.RUN && booking.runHold?.run.driverId && booking.runHold.run.driverId !== req.userId) {
       return res.status(403).json({ error: 'not_the_driver' });
     }
     try {
@@ -191,10 +197,13 @@ bookingsRouter.post(
     if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
     const booking = await prisma.booking.findUnique({
       where: { id: req.params.id },
-      include: { partnerHold: { include: { trip: true } } },
+      include: { partnerHold: { include: { trip: true } }, runHold: { include: { run: true } } },
     });
     if (!booking) return res.status(404).json({ error: 'not_found' });
     if (booking.kind === BookingKind.PARTNER && booking.partnerHold?.trip.partnerId !== req.userId) {
+      return res.status(403).json({ error: 'not_the_driver' });
+    }
+    if (booking.kind === BookingKind.RUN && booking.runHold?.run.driverId && booking.runHold.run.driverId !== req.userId) {
       return res.status(403).json({ error: 'not_the_driver' });
     }
     try {
@@ -314,14 +323,34 @@ bookingsRouter.post(
   }),
 );
 
+// Ops can mark any booking no-show. A Partner can mark one on their own
+// trip directly (spec screens table: the passenger-list "No-show"
+// button), and an Express driver can do the same for a passenger on
+// their assigned run — neither needs ops, they're the driver either way.
+// (The bulk "depart with remaining no-show" path in driver.ts calls the
+// same underlying function directly, bypassing this HTTP check.)
 bookingsRouter.post(
   '/bookings/:id/mark-no-show',
   requireAuth,
-  requireOps,
   asyncHandler(async (req, res) => {
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: { partnerHold: { include: { trip: true } }, runHold: { include: { run: true } } },
+    });
+    if (!booking) return res.status(404).json({ error: 'not_found' });
+
+    const isOwningPartner = booking.kind === BookingKind.PARTNER && booking.partnerHold?.trip.partnerId === req.userId;
+    const isAssignedDriver = booking.kind === BookingKind.RUN && booking.runHold?.run.driverId === req.userId;
+    let actorType: EscrowActorType = EscrowActorType.DRIVER;
+    if (!isOwningPartner && !isAssignedDriver) {
+      const user = await prisma.user.findUnique({ where: { id: req.userId } });
+      if (!user?.isOps) return res.status(403).json({ error: 'not_ops' });
+      actorType = EscrowActorType.OPS;
+    }
+
     try {
-      const booking = await markNoShow(req.params.id, req.userId!);
-      res.json({ booking });
+      const updated = await markNoShow(req.params.id, actorType, req.userId!);
+      res.json({ booking: updated });
     } catch (err) {
       handleError(err, res);
     }

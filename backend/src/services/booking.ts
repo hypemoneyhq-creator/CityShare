@@ -383,16 +383,17 @@ export async function resolveDispute(
   return loadBookingOrThrow(bookingId);
 }
 
-// Rider no-show at departure (spec section 5) — the cancellation policy
-// engine that triggers this automatically is step 7, not built. This is
-// the ops-invoked mechanism it will call.
-export async function markNoShow(bookingId: string, opsId: string) {
+// Rider no-show at departure (spec section 5). Callable by ops directly,
+// by a driver departing a stop with unboarded passengers (step 8's real
+// trigger), or the system's own lazy departure-time check (step 7) —
+// actorType records which one it actually was.
+export async function markNoShow(bookingId: string, actorType: EscrowActorType, actorId?: string) {
   const booking = await loadBookingOrThrow(bookingId);
   await transitionEscrow({
     escrowId: booking.escrow!.id,
     toState: EscrowState.FORFEIT,
-    actorType: EscrowActorType.OPS,
-    actorId: opsId,
+    actorType,
+    actorId,
     evidence: { reason: 'no_show' },
   });
   return loadBookingOrThrow(bookingId);

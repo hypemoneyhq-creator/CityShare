@@ -1,11 +1,14 @@
 # CityShare backend
 
-Steps 1-7 of the build order from the design handoff: identity & phone
+Steps 1-8 of the build order from the design handoff: identity & phone
 verification, the corridor -> service -> stop -> run data model, seat
 inventory including per-segment Express Stops, the escrow ledger and
 state machine, the API surface the mobile app's booking flow is built
-against, GPS-verified two-sided boarding with an offline tap queue, and
-the cancellation / reassignment / no-show policy engine.
+against, GPS-verified two-sided boarding with an offline tap queue, the
+cancellation / reassignment / no-show policy engine, and real driver
+identity driving the Express run lifecycle (assignment, dwell tracking,
+depart/no-show, incidents) plus Partner trip management (manifest,
+no-show, earnings).
 
 ## Stack
 
@@ -36,6 +39,7 @@ The server listens on `PORT` (default 4000).
 | POST | `/api/auth/identity` | Bearer | Submit Ghana Card number + selfie (mock match) |
 | GET | `/api/auth/me` | Bearer | Current user + verification status |
 | POST | `/api/auth/become-partner` | Bearer | Stand-in for Partner onboarding (not built yet) |
+| POST | `/api/auth/become-driver` | Bearer | Stand-in for Express driver onboarding (not built yet) |
 | GET | `/api/corridors` | — | List corridors with their active services |
 | GET | `/api/services/:id` | — | One service with its ordered stop profiles |
 | GET | `/api/services/:id/runs?date=YYYY-MM-DD` | — | Runs for a service |
@@ -50,21 +54,33 @@ The server listens on `PORT` (default 4000).
 | POST | `/api/partner-holds/:id/pay` | Bearer, verified | Same, for a Partner trip hold |
 | GET | `/api/bookings/:id` | Bearer (owner or ops) | Booking + escrow state; advances PENDING/REFUNDING if the mock payment has resolved |
 | GET | `/api/bookings` | Bearer | The caller's own bookings |
-| POST | `/api/bookings/:id/board/driver` | Bearer | Driver-side boarding tap: `{lat?, lng?, clientTimestamp?}`, HELD only |
+| POST | `/api/bookings/:id/board/driver` | Bearer, driver of the run or Partner of the trip | Driver-side boarding tap: `{lat?, lng?, clientTimestamp?}`, HELD only |
 | POST | `/api/bookings/:id/board/rider` | Bearer, rider only | Rider-side boarding tap; both taps -> RELEASABLE (if GPS matches) or DISPUTED |
-| POST | `/api/bookings/:id/deny-boarding` | Bearer | Driver-side "this passenger did not board" -> DISPUTED |
+| POST | `/api/bookings/:id/deny-boarding` | Bearer, driver of the run or Partner of the trip | Driver-side "this passenger did not board" -> DISPUTED |
 | POST | `/api/bookings/:id/dispute` | Bearer, rider only | "I did not board" -> DISPUTED |
 | POST | `/api/bookings/:id/location-pings` | Bearer, rider only | Append a GPS point to the rider's trip-window trail |
 | GET | `/api/bookings/:id/location-pings` | Bearer (owner or ops) | The rider's location trail, for dispute review |
 | POST | `/api/bookings/:id/resolve-dispute` | Bearer, ops | DISPUTED -> RELEASABLE or REFUNDING |
-| POST | `/api/bookings/:id/mark-no-show` | Bearer, ops | HELD -> FORFEIT |
+| POST | `/api/bookings/:id/mark-no-show` | Bearer, owning Partner / assigned driver / ops | HELD -> FORFEIT |
 | POST | `/api/bookings/:id/settle` | Bearer, ops | RELEASABLE/FORFEIT -> SETTLED (pays out for a Partner booking) |
-| GET | `/api/runs/:id/manifest` | — | Paid passengers on a run (driver app data; no driver auth yet) |
+| GET | `/api/runs/:id/manifest` | — | Paid passengers on a run (public, like the other read-only run endpoints) |
 | GET | `/api/ops/stale-boardings?minutes=` | Bearer, ops | HELD bookings the driver boarded but the rider never confirmed |
 | POST | `/api/bookings/:id/cancel` | Bearer, rider only | Rider cancellation; refund % by time-to-departure, seat always returns |
 | POST | `/api/bookings/:id/reassign` | Bearer, rider only | Transfer a HELD seat to another verified rider by phone |
 | POST | `/api/runs/:id/cancel` | Bearer, ops | Driver-side cancellation: full refund for every HELD booking on the run |
 | POST | `/api/partner-trips/:id/cancel` | Bearer, Partner or ops | Same, for a Partner trip |
+| POST | `/api/runs/:id/assign-driver` | Bearer, ops | Assign a driver to a run (sets it `ASSIGNED`) |
+| GET | `/api/driver/runs` | Bearer, driver | The caller's assigned runs, each with a live `seatsSold` count |
+| POST | `/api/runs/:id/start` | Bearer, assigned driver | `ASSIGNED` -> `IN_PROGRESS` |
+| POST | `/api/runs/:id/stops/:stopId/arrive` | Bearer, assigned driver | Record arrival at a stop: `{clientTimestamp?}` |
+| GET | `/api/runs/:id/stops/:stopId/dwell` | — | Live dwell countdown for a stop (public — useful to a future rider live-trip screen too) |
+| POST | `/api/runs/:id/stops/:stopId/depart` | Bearer, assigned driver | Record departure; `{markNoShowForUnboarded}` bulk-forfeits unboarded bookings for that stop |
+| POST | `/api/runs/:id/incidents` | Bearer, assigned driver | Report an incident: `{category, note?, lat?, lng?}` |
+| POST | `/api/runs/:id/complete` | Bearer, assigned driver | `IN_PROGRESS` -> `COMPLETED`; returns the stop-by-stop run summary |
+| GET | `/api/partner-trips/mine` | Bearer | The caller's own Partner trips, each with available seats |
+| GET | `/api/partner-trips/:id/manifest` | Bearer, owning Partner or ops | Passenger list for one Partner trip |
+| POST | `/api/partner-trips/:id/complete` | Bearer, owning Partner | Mark a Partner trip `COMPLETED` |
+| GET | `/api/partner/earnings` | Bearer | Available/pending/held cedis + recent payouts, resolving any pending payouts first |
 
 ## Data model
 
@@ -145,12 +161,13 @@ spec calls out explicitly:
   doesn't invent the answer, it just gives ops a mechanism to apply
   whatever the answer turns out to be.
 
-Driver identity doesn't exist yet (Express drivers are employed by an
-Operator — step 8), so the driver-side boarding tap accepts any
-authenticated caller for a Run booking; a Partner booking's tap is
-properly restricted to that trip's Partner, since that identity is real.
-Ops identity is similarly a stub — `User.isOps`, set directly, standing
-in for the access control the ops dashboard (step 9) will actually own.
+Driver identity is real as of step 8 (`User.isDriver`, a run's `driverId`)
+— the driver-side boarding tap and deny-boarding are restricted to a
+run's assigned driver, or a Partner booking's own Partner. A run with no
+assigned driver yet still accepts any authenticated caller, for backward
+compatibility with runs the ops-assignment flow hasn't touched. Ops
+identity is still a stub — `User.isOps`, set directly, standing in for
+the access control the ops dashboard (step 9) will actually own.
 
 ### Boarding verification and offline queueing (spec section 4)
 
@@ -185,10 +202,10 @@ There's no actual local queue here (that's the driver app's job, step 8)
 (re-tapping the same side just overwrites with the same values) and
 indifferent to how late a tap arrives.
 
-**Not built here**: dwell-duration tracking (that's the driver app's
-live countdown, step 8) and any UI at all for the manifest or location
-trail — `GET /runs/:id/manifest` and the stale-boardings query are the
-data those future screens will read.
+**Not built here**: any UI at all for the location trail — the
+stale-boardings query is the data a future ops dashboard will read. The
+manifest and dwell countdown now have a real UI: see the driver app
+section below.
 
 ### Cancellation, reassignment, no-show (spec section 5)
 
@@ -232,3 +249,73 @@ on the corridor, and counting the cancellation against Partner/Operator
 status — both need a notification path and a reputation model (the
 New→Verified→Trusted→Preferred ladder from spec section 8) that don't
 exist yet.
+
+### Driver identity and the Express run lifecycle (spec section 6)
+
+`src/services/driver.ts` gives the run lifecycle a real actor: `isDriver`
+plus a run's `driverId` (set by ops via `assign-driver`, since there's no
+Operator roster or scheduling yet — step 10 owns that). Everything here
+is scoped to `requireAssignedRun`, so a driver can only start, arrive,
+depart, report on, or complete a run they were actually assigned to —
+`startRun` moves a run `ASSIGNED -> IN_PROGRESS`, and `completeRun` moves
+it to `COMPLETED` while deriving the whole run-complete summary
+(stop-by-stop arrival record, seats carried, no-shows) from
+`RunStopEvent` and `Booking`/`Escrow` rather than persisting anything new.
+
+**Dwell tracking is a cap, not a countdown someone has to manage by
+hand** (spec: "maximum dwell is three minutes"). `arriveAtStop` just
+timestamps a `RunStopEvent`; `getStopStatus` computes `remainingSeconds`
+live from that timestamp plus the stop's `maxDwellSeconds` every time
+it's asked, so there's nothing to keep in sync — the driver app's
+countdown is just this number ticking down locally between polls.
+`departStop` timestamps the other side and, when told to
+(`markNoShowForUnboarded`), forfeits every booking still unboarded for
+that specific stop — scoped to `boardStopId`, so a passenger boarding
+further down the route is untouched by a stop dwell running out. This
+reuses `markNoShow` from `booking.ts` directly (bypassing the HTTP-level
+ownership check in `bookings.ts`, since the driver's assignment was
+already verified by `requireAssignedRun`), now generalized to accept
+`EscrowActorType.DRIVER` with the driver's own id recorded in the ledger
+— previously every no-show was attributed to `OPS`.
+
+Incidents (`reportIncident`) are a flat append — `RunIncident` with a
+category from the design's five (`heavy_traffic`, `vehicle_fault`,
+`stop_blocked`, `passenger_issue`, `accident_sos`), an optional note and
+GPS. Nothing consumes them yet (no ops dashboard, no rider delay
+notification) — this is the write side of a queue step 9 will read.
+
+The GPS coordinates a driver's boarding tap needs (spec section 4) come
+from the stop itself: `GET /runs/:id/segments` now returns each stop's
+`lat`/`lng`/`maxDwellSeconds` alongside its schedule, so a driver app has
+real coordinates to submit rather than none at all — this was missing
+until step 8 needed it for real, and its absence would have silently
+forced every driver tap into a GPS-mismatch dispute (no lat/lng ever
+within tolerance of anything).
+
+### Partner trip management (spec: Partner home / passenger list / earnings)
+
+The Partner-facing counterparts to the driver endpoints above, since a
+Partner already **is** the driver of their own trip. `GET
+/partner-trips/mine` and `/partner-trips/:id/manifest` reuse the same
+availability and manifest shapes as the Run/driver side. `mark-no-show`
+on `bookings.ts` was widened this step to check the owning Partner (or
+the assigned driver on a Run) before falling back to requiring ops — the
+spec's passenger-list "No-show" button doesn't need an ops escalation
+when the caller demonstrably is the driver.
+
+`GET /partner/earnings` reports real aggregates only: `available`
+(`Payout` rows `APPROVED`), `pending` (still `PENDING`), and `held`
+(active bookings' fares still sitting in escrow) — no commission
+percentage, because none has been decided (spec marks Operator/Partner
+revenue shares "to be agreed"). One bug worth calling out: payouts
+resolve lazily like every other mock-provider outcome, but nothing else
+in the request path polls them the way `GET /bookings/:id` polls a
+pending payment — without an explicit resolve step here, a payout whose
+`resolvesAt` had already passed would report `PENDING` forever, since no
+other endpoint ever asks the provider about it again. The earnings route
+now resolves every pending payout for the caller before aggregating.
+
+Not implemented: cash-out to Mobile Money (the mobile earnings screen
+shows why), and any Operator entity at all — every "Operator" role in
+this step's code is really `User.isPartner`/`isDriver` standing in for
+it, same pattern as `isOps` since step 4.

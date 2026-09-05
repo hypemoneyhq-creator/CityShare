@@ -6,20 +6,23 @@ certified Express Operators on one marketplace, paid by Mobile Money into
 escrow that only releases once both rider and driver confirm boarding.
 
 This repo is being built from a design handoff following the build order
-in the handoff spec. Current status: **step 7** — cancellation,
-reassignment and no-show policy engine.
+in the handoff spec. Current status: **step 8** — Express driver app and
+Partner trip management.
 
 - [`backend/`](backend/README.md) — Node.js/TypeScript/Express API +
   PostgreSQL (Prisma): phone + Ghana Card verification, corridor/service/
   stop/run model, per-segment seat inventory and holds for both Express
   and Partner trips, the escrow ledger/state machine with a mock MoMo
   payment provider behind it, GPS-verified two-sided boarding with an
-  offline-safe tap queue, and the cancellation/reassignment/no-show
-  policy engine.
-- [`mobile/`](mobile/README.md) — Expo/React Native rider app: phone/ID
-  verification, then search → results → trip detail → pay → digital
-  ticket, all wired to the real backend and recreated at high fidelity
-  from the design.
+  offline-safe tap queue, the cancellation/reassignment/no-show policy
+  engine, and real driver identity driving the Express run lifecycle plus
+  Partner trip management.
+- [`mobile/`](mobile/README.md) — Expo/React Native app: phone/ID
+  verification, the rider-facing search → results → trip detail → pay →
+  digital ticket flow, Partner mode (list a trip, manage passengers,
+  earnings), and the Express driver app (shift start, at a stop, en
+  route, run complete) — all wired to the real backend and recreated at
+  high fidelity from the design.
 
 ## Build order
 
@@ -37,7 +40,10 @@ reassignment and no-show policy engine.
    refund ladder by time-to-departure, seat-preserving reassignment to a
    verified rider, driver-side full-refund cancellation, lazy
    auto-no-show once scheduled departure passes)
-8. Driver app (Express) and Partner trip management
+8. **Driver app (Express) and Partner trip management** ✅ (backend:
+   driver identity, run assignment, dwell tracking, depart/no-show,
+   incidents, Partner manifest/no-show/earnings; mobile: Partner mode and
+   Express driver app screens)
 9. Ops dashboard
 10. Express Operator portal
 
