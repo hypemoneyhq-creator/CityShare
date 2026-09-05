@@ -4,6 +4,7 @@ import { prisma } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { requireVerified } from '../middleware/verified';
+import { cancelPartnerTrip } from '../services/booking';
 import {
   createPartnerHold,
   getPartnerTripAvailability,
@@ -102,6 +103,24 @@ partnerTripsRouter.post(
     } catch (err) {
       handleInventoryError(err, res);
     }
+  }),
+);
+
+// Driver-side cancellation (spec section 5) — the Partner IS the driver
+// here, so unlike the Run case this is properly ownership-checked rather
+// than ops-gated. An ops user may also cancel on a Partner's behalf.
+partnerTripsRouter.post(
+  '/partner-trips/:id/cancel',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const trip = await prisma.partnerTrip.findUnique({ where: { id: req.params.id } });
+    if (!trip) return res.status(404).json({ error: 'not_found' });
+    if (trip.partnerId !== req.userId) {
+      const user = await prisma.user.findUnique({ where: { id: req.userId } });
+      if (!user?.isOps) return res.status(403).json({ error: 'not_the_partner' });
+    }
+    const result = await cancelPartnerTrip(req.params.id);
+    res.json(result);
   }),
 );
 

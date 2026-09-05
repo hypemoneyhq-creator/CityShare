@@ -9,12 +9,14 @@ import { requireVerified } from '../middleware/verified';
 import {
   addLocationPing,
   BookingError,
+  cancelBooking,
   denyBoarding,
   getLocationTrail,
   getStaleBoardings,
   initiateBookingPayment,
   markNoShow,
   openDispute,
+  reassignBooking,
   refreshBookingStatus,
   resolveDispute,
   settleBooking,
@@ -26,7 +28,12 @@ export const bookingsRouter = Router();
 
 function handleError(err: unknown, res: import('express').Response) {
   if (err instanceof BookingError) {
-    const status = err.code === 'not_found' ? 404 : err.code === 'expired' ? 410 : 400;
+    const status =
+      err.code === 'not_found' || err.code === 'recipient_not_found'
+        ? 404
+        : err.code === 'expired' || err.code === 'too_late'
+          ? 410
+          : 400;
     return res.status(status).json({ error: err.code, message: err.message });
   }
   if (err instanceof EscrowError) {
@@ -234,6 +241,39 @@ bookingsRouter.get(
     if (!access) return res.status(404).json({ error: 'not_found' });
     const trail = await getLocationTrail(req.params.id);
     res.json({ trail });
+  }),
+);
+
+bookingsRouter.post(
+  '/bookings/:id/cancel',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    try {
+      const booking = await cancelBooking(req.params.id, req.userId!);
+      res.json({ booking });
+    } catch (err) {
+      handleError(err, res);
+    }
+  }),
+);
+
+const reassignSchema = z.object({ toPhone: z.string().regex(/^\+\d{7,15}$/) });
+
+// Reassignment must be presented above cancellation in the UI (spec
+// section 5) — that's a client concern; this is the endpoint both
+// options call.
+bookingsRouter.post(
+  '/bookings/:id/reassign',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = reassignSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'invalid_input' });
+    try {
+      const booking = await reassignBooking(req.params.id, req.userId!, parsed.data.toPhone);
+      res.json({ booking });
+    } catch (err) {
+      handleError(err, res);
+    }
   }),
 );
 

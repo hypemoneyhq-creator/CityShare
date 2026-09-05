@@ -1,10 +1,11 @@
 # CityShare backend
 
-Steps 1-6 of the build order from the design handoff: identity & phone
+Steps 1-7 of the build order from the design handoff: identity & phone
 verification, the corridor -> service -> stop -> run data model, seat
 inventory including per-segment Express Stops, the escrow ledger and
 state machine, the API surface the mobile app's booking flow is built
-against, and GPS-verified two-sided boarding with an offline tap queue.
+against, GPS-verified two-sided boarding with an offline tap queue, and
+the cancellation / reassignment / no-show policy engine.
 
 ## Stack
 
@@ -60,6 +61,10 @@ The server listens on `PORT` (default 4000).
 | POST | `/api/bookings/:id/settle` | Bearer, ops | RELEASABLE/FORFEIT -> SETTLED (pays out for a Partner booking) |
 | GET | `/api/runs/:id/manifest` | — | Paid passengers on a run (driver app data; no driver auth yet) |
 | GET | `/api/ops/stale-boardings?minutes=` | Bearer, ops | HELD bookings the driver boarded but the rider never confirmed |
+| POST | `/api/bookings/:id/cancel` | Bearer, rider only | Rider cancellation; refund % by time-to-departure, seat always returns |
+| POST | `/api/bookings/:id/reassign` | Bearer, rider only | Transfer a HELD seat to another verified rider by phone |
+| POST | `/api/runs/:id/cancel` | Bearer, ops | Driver-side cancellation: full refund for every HELD booking on the run |
+| POST | `/api/partner-trips/:id/cancel` | Bearer, Partner or ops | Same, for a Partner trip |
 
 ## Data model
 
@@ -184,3 +189,46 @@ indifferent to how late a tap arrives.
 live countdown, step 8) and any UI at all for the manifest or location
 trail — `GET /runs/:id/manifest` and the stale-boardings query are the
 data those future screens will read.
+
+### Cancellation, reassignment, no-show (spec section 5)
+
+`src/services/cancellationPolicy.ts` holds the refund ladder as a pure
+function of minutes-before-departure — 100% at 3+ hours, 80% at 2-3,
+50% at 1-2, 0% under 30 minutes. **The spec's table has a gap**: nothing
+is said about 30-60 minutes (it jumps straight from "1 to 2 hours: 50%"
+to "under 30 minutes: 0%"). Rather than invent a fifth number, that band
+is treated as the same 0% tier — called out in a comment there, not
+silently assumed. `cancelBooking` always releases the seat regardless of
+the percentage (per the spec table's SEAT column), and a 0%-refund
+cancellation still goes through `REFUNDING` for a consistent ledger
+trail, just skipping the payment-provider call since there's nothing to
+send — it resolves straight to `REFUNDED` in the same request.
+
+Departure time itself is computed in `getDepartureTime`: a Run's is its
+`date` plus the board stop's `scheduledDeparture`; a Partner trip's is
+just `departAt`. The same function backs an auto-no-show check folded
+into `refreshBookingStatus` — spec: "at scheduled departure, an
+unboarded passenger is marked no-show" — so once a HELD booking's
+departure time has passed with no rider confirmation, the next time
+anyone asks about it (same lazy pattern as everything else in this
+service), it transitions to `FORFEIT` on its own. A GPS-flagged dispute
+already moved the escrow out of HELD, so it can't double up with this.
+
+**Reassignment** (`reassignBooking`) moves no money — the fare is
+already in escrow and the spec's own framing ("keeps the seat filled,
+the driver paid, the rider whole") implies the two riders settle between
+themselves off-platform. What changes: `riderId` on the `Booking`, a
+fresh `boardingCode`, both boarding taps reset to null so the recipient
+must tap in themselves, and a `BookingTransfer` row for the audit trail.
+The recipient must already be a verified CityShare user (same bar as
+`requireVerified` — phone, Ghana Card, selfie) found by phone number;
+there's no in-app contact picker or invite flow, just the number.
+
+**Driver-side cancellation** (`cancelRun` / `cancelPartnerTrip`) is
+scoped to bookings still `HELD` on that run or trip — refunds every one
+in full regardless of timing, per spec, and marks the Run/PartnerTrip
+`CANCELLED`. Not implemented: offering affected riders the next service
+on the corridor, and counting the cancellation against Partner/Operator
+status — both need a notification path and a reputation model (the
+New→Verified→Trusted→Preferred ladder from spec section 8) that don't
+exist yet.

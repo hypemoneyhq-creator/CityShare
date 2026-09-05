@@ -1,6 +1,7 @@
-import { BookingKind, EscrowActorType, EscrowState, HoldStatus, PaymentOutcome } from '@prisma/client';
+import { BookingKind, EscrowActorType, EscrowState, HoldStatus, PaymentOutcome, RunStatus } from '@prisma/client';
 import crypto from 'crypto';
 import { prisma } from '../db';
+import { refundPercentFor } from './cancellationPolicy';
 import { createEscrowForBooking, EscrowError, transitionEscrow } from './escrow';
 import { distanceMeters, PICKUP_GPS_TOLERANCE_METERS } from './geo';
 import * as paymentProvider from './paymentProvider';
@@ -143,6 +144,21 @@ export async function refreshBookingStatus(bookingId: string) {
         });
       }
     }
+  } else if (escrow.state === EscrowState.HELD && !booking.riderBoardedAt) {
+    // "At scheduled departure, an unboarded passenger is marked no-show"
+    // (spec section 5). There's no scheduler here — like every other
+    // lazy transition in this file, whoever next asks about the booking
+    // triggers the check. A GPS dispute already moved the escrow out of
+    // HELD, so it can't be double-counted as a no-show.
+    const departsAt = await getDepartureTime(booking);
+    if (departsAt && departsAt.getTime() <= Date.now()) {
+      await transitionEscrow({
+        escrowId: escrow.id,
+        toState: EscrowState.FORFEIT,
+        actorType: EscrowActorType.SYSTEM,
+        evidence: { reason: 'no_show_auto', scheduledDeparture: departsAt },
+      });
+    }
   }
 
   return loadBookingOrThrow(bookingId);
@@ -160,6 +176,34 @@ async function getPickupCoords(
   }
   if (booking.kind === BookingKind.PARTNER && booking.partnerHold) {
     return { lat: booking.partnerHold.trip.originLat, lng: booking.partnerHold.trip.originLng };
+  }
+  return null;
+}
+
+function combineDateAndTime(date: Date, hhmm: string): Date {
+  const [hours, minutes] = hhmm.split(':').map(Number);
+  const combined = new Date(date);
+  combined.setUTCHours(hours, minutes, 0, 0);
+  return combined;
+}
+
+// Scheduled departure for the cancellation ladder and the auto-no-show
+// check. A Run's date is a bare day; the actual time comes from the
+// board stop's scheduledDeparture (falling back to scheduledArrival for
+// a terminal stop that has no departure, though boarding never happens
+// there in practice). A Partner trip already has a full departAt.
+async function getDepartureTime(booking: Awaited<ReturnType<typeof loadBookingOrThrow>>): Promise<Date | null> {
+  if (booking.kind === BookingKind.RUN && booking.runHold) {
+    const [run, stop] = await Promise.all([
+      prisma.run.findUnique({ where: { id: booking.runHold.runId } }),
+      prisma.stopProfile.findUnique({ where: { id: booking.runHold.boardStopId } }),
+    ]);
+    const hhmm = stop?.scheduledDeparture ?? stop?.scheduledArrival;
+    if (!run || !hhmm) return null;
+    return combineDateAndTime(run.date, hhmm);
+  }
+  if (booking.kind === BookingKind.PARTNER && booking.partnerHold) {
+    return booking.partnerHold.trip.departAt;
   }
   return null;
 }
@@ -380,4 +424,161 @@ export async function settleBooking(bookingId: string, opsId: string, payoutAmou
     evidence: { payoutAmountCedis },
   });
   return loadBookingOrThrow(bookingId);
+}
+
+async function releaseBookingHold(booking: Awaited<ReturnType<typeof loadBookingOrThrow>>) {
+  if (booking.kind === BookingKind.RUN) {
+    await prisma.seatHold.update({ where: { id: booking.runHoldId! }, data: { status: HoldStatus.RELEASED } });
+  } else {
+    await prisma.partnerSeatHold.update({ where: { id: booking.partnerHoldId! }, data: { status: HoldStatus.RELEASED } });
+  }
+}
+
+// Rider-initiated cancellation (spec section 5). The seat always returns
+// to inventory; the refund percentage depends on how long before
+// departure the cancellation happens (see cancellationPolicy.ts). A 0%
+// tier still goes through REFUNDING/REFUNDED for a consistent ledger
+// trail, just with nothing to actually send the payment provider.
+export async function cancelBooking(bookingId: string, riderId: string) {
+  const booking = await loadBookingOrThrow(bookingId);
+  if (booking.riderId !== riderId) throw new BookingError('not_found', 'Booking not found');
+  if (booking.escrow!.state !== EscrowState.HELD) {
+    throw new BookingError('invalid_state', 'Only a HELD booking can be cancelled');
+  }
+
+  const departsAt = await getDepartureTime(booking);
+  if (!departsAt) throw new BookingError('invalid_state', 'This trip has no scheduled departure to cancel against');
+  const minutesBeforeDeparture = (departsAt.getTime() - Date.now()) / 60000;
+  if (minutesBeforeDeparture <= 0) {
+    throw new BookingError('too_late', 'Departure has already passed — this is a no-show, not a cancellation');
+  }
+
+  const refundPercent = refundPercentFor(minutesBeforeDeparture);
+  const refundAmountCedis = Math.round((booking.fareCedis * refundPercent) / 100);
+
+  await releaseBookingHold(booking);
+
+  await transitionEscrow({
+    escrowId: booking.escrow!.id,
+    toState: EscrowState.REFUNDING,
+    actorType: EscrowActorType.RIDER,
+    actorId: riderId,
+    evidence: { reason: 'rider_cancellation', minutesBeforeDeparture, refundPercent, refundAmountCedis },
+  });
+
+  if (refundAmountCedis > 0) {
+    await paymentProvider.refund(booking.paymentIntentId, refundAmountCedis, 'rider_cancellation');
+  } else {
+    // Nothing to refund — no provider call to wait on, so resolve
+    // straight through rather than leaving it stuck in REFUNDING forever.
+    await transitionEscrow({
+      escrowId: booking.escrow!.id,
+      toState: EscrowState.REFUNDED,
+      actorType: EscrowActorType.SYSTEM,
+      evidence: { reason: 'zero_percent_tier' },
+    });
+  }
+
+  return loadBookingOrThrow(bookingId);
+}
+
+function isVerifiedRider(user: { phoneVerifiedAt: Date | null; ghanaCardVerifiedAt: Date | null; selfieVerifiedAt: Date | null }): boolean {
+  return Boolean(user.phoneVerifiedAt && user.ghanaCardVerifiedAt && user.selfieVerifiedAt);
+}
+
+// "Reassignment is deliberately the better option and must be presented
+// above cancellation" (spec section 5). No money moves — the fare is
+// already in escrow and stays there; the two riders are expected to
+// settle between themselves. What changes is who can board: a fresh
+// boarding code, boarding taps reset, and the manifest (a live query)
+// reflects the new name on its next read.
+export async function reassignBooking(bookingId: string, fromRiderId: string, toPhone: string) {
+  const booking = await loadBookingOrThrow(bookingId);
+  if (booking.riderId !== fromRiderId) throw new BookingError('not_found', 'Booking not found');
+  if (booking.escrow!.state !== EscrowState.HELD) {
+    throw new BookingError('invalid_state', 'Only a HELD booking can be reassigned');
+  }
+
+  const recipient = await prisma.user.findUnique({ where: { phone: toPhone } });
+  if (!recipient) throw new BookingError('recipient_not_found', 'No CityShare user with that phone number');
+  if (recipient.id === fromRiderId) throw new BookingError('invalid_recipient', 'Cannot reassign a seat to yourself');
+  if (!isVerifiedRider(recipient)) {
+    throw new BookingError('recipient_not_verified', 'The recipient must be a verified rider');
+  }
+
+  const newBoardingCode = generateBoardingCode();
+  await prisma.$transaction([
+    prisma.booking.update({
+      where: { id: bookingId },
+      data: {
+        riderId: recipient.id,
+        boardingCode: newBoardingCode,
+        // The original rider's boarding rights end immediately; the
+        // recipient must tap in fresh.
+        driverBoardedAt: null,
+        driverBoardLat: null,
+        driverBoardLng: null,
+        riderBoardedAt: null,
+        riderBoardLat: null,
+        riderBoardLng: null,
+      },
+    }),
+    prisma.bookingTransfer.create({ data: { bookingId, fromRiderId, toRiderId: recipient.id } }),
+  ]);
+
+  return loadBookingOrThrow(bookingId);
+}
+
+// Driver-side cancellation (spec section 5): "a separate and more
+// serious case: all affected riders are refunded in full regardless of
+// timing." Scoped to bookings still HELD on the run — one already
+// RELEASABLE means both parties already confirmed boarding, so there's
+// no trip left to cancel. Not implemented here: offering the next
+// service on the corridor, and counting the cancellation against
+// Partner/Operator status — both need a notification path and a
+// reputation model this build doesn't have yet.
+export async function cancelRun(runId: string) {
+  await prisma.run.update({ where: { id: runId }, data: { status: RunStatus.CANCELLED } });
+
+  const bookings = await prisma.booking.findMany({
+    where: { runHold: { runId }, escrow: { state: EscrowState.HELD } },
+    include: { escrow: true },
+  });
+
+  for (const b of bookings) {
+    const full = await loadBookingOrThrow(b.id);
+    await releaseBookingHold(full);
+    await transitionEscrow({
+      escrowId: full.escrow!.id,
+      toState: EscrowState.REFUNDING,
+      actorType: EscrowActorType.SYSTEM,
+      evidence: { reason: 'run_cancelled' },
+    });
+    await paymentProvider.refund(full.paymentIntentId, full.fareCedis, 'run_cancelled');
+  }
+
+  return { cancelledBookings: bookings.length };
+}
+
+export async function cancelPartnerTrip(tripId: string) {
+  await prisma.partnerTrip.update({ where: { id: tripId }, data: { status: RunStatus.CANCELLED } });
+
+  const bookings = await prisma.booking.findMany({
+    where: { partnerHold: { tripId }, escrow: { state: EscrowState.HELD } },
+    include: { escrow: true },
+  });
+
+  for (const b of bookings) {
+    const full = await loadBookingOrThrow(b.id);
+    await releaseBookingHold(full);
+    await transitionEscrow({
+      escrowId: full.escrow!.id,
+      toState: EscrowState.REFUNDING,
+      actorType: EscrowActorType.SYSTEM,
+      evidence: { reason: 'trip_cancelled' },
+    });
+    await paymentProvider.refund(full.paymentIntentId, full.fareCedis, 'trip_cancelled');
+  }
+
+  return { cancelledBookings: bookings.length };
 }

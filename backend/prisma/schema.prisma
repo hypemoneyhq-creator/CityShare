@@ -366,6 +366,23 @@ model Booking {
 
   escrow        Escrow?
   locationPings LocationPing[]
+  transfers     BookingTransfer[]
+}
+
+// Reassignment audit trail (spec section 5: "reassignment is deliberately
+// the better option... on transfer, the original rider loses boarding
+// rights immediately, a new boarding code is issued to the recipient").
+// Append-only, same spirit as EscrowLedgerEntry but for booking ownership
+// rather than escrow state.
+model BookingTransfer {
+  id          String   @id @default(uuid())
+  booking     Booking  @relation(fields: [bookingId], references: [id])
+  bookingId   String
+  fromRiderId String
+  toRiderId   String
+  createdAt   DateTime @default(now())
+
+  @@index([bookingId])
 }
 
 // The rider's location trail for the trip window (spec section 4:

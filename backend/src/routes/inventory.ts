@@ -2,8 +2,9 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../middleware/asyncHandler';
+import { requireOps } from '../middleware/ops';
 import { requireVerified } from '../middleware/verified';
-import { getManifestForRun } from '../services/booking';
+import { cancelRun, getManifestForRun } from '../services/booking';
 import {
   createRunHold,
   getRunSegments,
@@ -106,6 +107,20 @@ inventoryRouter.get(
         escrowState: b.escrow?.state,
       })),
     });
+  }),
+);
+
+// Driver-side cancellation (spec section 5) — "a separate and more
+// serious case" from a rider cancelling their own seat. No driver auth
+// exists yet (step 8), so this is ops-gated like the rest of the
+// operational actions until that lands.
+inventoryRouter.post(
+  '/runs/:id/cancel',
+  requireAuth,
+  requireOps,
+  asyncHandler(async (req, res) => {
+    const result = await cancelRun(req.params.id);
+    res.json(result);
   }),
 );
 
