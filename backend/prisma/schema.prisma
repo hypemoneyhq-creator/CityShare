@@ -26,14 +26,20 @@ model User {
 
   isRider   Boolean @default(true)
   isPartner Boolean @default(false)
+  // Stand-in for the ops dashboard's access control (not built — step 9).
+  // Ops-only escrow actions (resolving a dispute, marking a no-show,
+  // settling) are gated on this flag directly for now.
+  isOps     Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  otps               PhoneOtp[]
-  seatHolds          SeatHold[]
-  partnerTrips       PartnerTrip[]
-  partnerSeatHolds   PartnerSeatHold[]
+  otps             PhoneOtp[]
+  seatHolds        SeatHold[]
+  partnerTrips     PartnerTrip[]
+  partnerSeatHolds PartnerSeatHold[]
+  paymentIntents   PaymentIntent[]
+  bookings         Booking[]
 }
 
 // One-time SMS codes for phone verification. Kept as its own table (rather
@@ -184,8 +190,15 @@ model SeatHold {
   rider   User   @relation(fields: [riderId], references: [id])
   riderId String
 
+  // Locked in at hold creation (see computeRunFare) so the amount charged
+  // can never drift from what the rider was quoted, even if fares change
+  // before payment completes.
+  fareCedis Int
+
   expiresAt DateTime
   createdAt DateTime @default(now())
+
+  booking Booking?
 
   @@index([runId, status])
 }
@@ -239,8 +252,161 @@ model PartnerSeatHold {
   rider   User   @relation(fields: [riderId], references: [id])
   riderId String
 
+  fareCedis Int
+
   expiresAt DateTime
   createdAt DateTime @default(now())
 
+  booking Booking?
+
   @@index([tripId, status])
+}
+
+// --- Payment (mock) --------------------------------------------------------
+// No MoMo merchant agreement exists yet — see root README "Building the
+// money path before MoMo is signed". This mocks the provider interface
+// documented there so booking/escrow can be built and tested now; a real
+// provider is a swap behind src/services/paymentProvider.ts, not a rewrite.
+//
+// The mock resolves lazily: the eventual outcome is decided at creation
+// time (by a test convention — see paymentProvider.ts) and only "revealed"
+// once resolvesAt passes, the same pattern SeatHold expiry uses.
+
+enum PaymentOutcome {
+  PENDING
+  APPROVED
+  DECLINED
+  TIMEOUT
+}
+
+model PaymentIntent {
+  id             String         @id @default(uuid())
+  rider          User           @relation(fields: [riderId], references: [id])
+  riderId        String
+  amountCedis    Int
+  reference      String
+  idempotencyKey String         @unique
+  status         PaymentOutcome @default(PENDING)
+  outcome        PaymentOutcome
+  resolvesAt     DateTime
+  createdAt      DateTime       @default(now())
+
+  booking Booking?
+  refunds Refund[]
+}
+
+model Refund {
+  id            String         @id @default(uuid())
+  paymentIntent PaymentIntent  @relation(fields: [intentId], references: [id])
+  intentId      String
+  amountCedis   Int
+  reason        String
+  status        PaymentOutcome @default(PENDING)
+  resolvesAt    DateTime
+  createdAt     DateTime       @default(now())
+}
+
+model Payout {
+  id          String         @id @default(uuid())
+  payeeId     String
+  amountCedis Int
+  reference   String
+  status      PaymentOutcome @default(PENDING)
+  failReason  String?
+  resolvesAt  DateTime
+  createdAt   DateTime       @default(now())
+}
+
+// --- Booking + escrow --------------------------------------------------
+// A Booking is what a SeatHold/PartnerSeatHold becomes once the rider
+// pays for it. Escrow is CityShare's own ledger — HELD / RELEASABLE /
+// DISPUTED / FORFEIT are states in this database, never inferred from the
+// payment provider (spec: "Building the money path" rules).
+
+enum BookingKind {
+  RUN
+  PARTNER
+}
+
+model Booking {
+  id   String      @id @default(uuid())
+  kind BookingKind
+
+  rider   User   @relation(fields: [riderId], references: [id])
+  riderId String
+
+  runHold       SeatHold?        @relation(fields: [runHoldId], references: [id])
+  runHoldId     String?          @unique
+  partnerHold   PartnerSeatHold? @relation(fields: [partnerHoldId], references: [id])
+  partnerHoldId String?          @unique
+
+  // Locked in from the hold at payment time — never recomputed.
+  seats     Int
+  fareCedis Int
+
+  // Set once escrow reaches HELD (spec section 3: "payment captured; seat
+  // confirmed; ticket issued").
+  boardingCode String?
+
+  paymentIntent   PaymentIntent @relation(fields: [paymentIntentId], references: [id])
+  paymentIntentId String        @unique
+
+  // Two-sided boarding (spec section 4). Real GPS/offline-queue evidence
+  // is step 6 — these are bare timestamps for now, enough to exercise the
+  // escrow invariant that both taps are required.
+  driverBoardedAt DateTime?
+  riderBoardedAt  DateTime?
+
+  createdAt DateTime @default(now())
+
+  escrow Escrow?
+}
+
+enum EscrowState {
+  PENDING
+  HELD
+  RELEASABLE
+  DISPUTED
+  REFUNDING
+  REFUNDED
+  FORFEIT
+  SETTLED
+  VOID
+}
+
+enum EscrowActorType {
+  SYSTEM
+  RIDER
+  DRIVER
+  OPS
+}
+
+model Escrow {
+  id          String      @id @default(uuid())
+  booking     Booking     @relation(fields: [bookingId], references: [id])
+  bookingId   String      @unique
+  state       EscrowState @default(PENDING)
+  amountCedis Int
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  ledger EscrowLedgerEntry[]
+}
+
+// Append-only. Every transition is written here with actor, timestamp and
+// an evidence reference (spec section 3 invariant) — entries are never
+// updated or deleted, and disputes are decided from this table, not from
+// Escrow.state alone.
+model EscrowLedgerEntry {
+  id        String          @id @default(uuid())
+  escrow    Escrow          @relation(fields: [escrowId], references: [id])
+  escrowId  String
+  fromState EscrowState?
+  toState   EscrowState
+  actorType EscrowActorType
+  actorId   String?
+  evidence  Json?
+  createdAt DateTime        @default(now())
+
+  @@index([escrowId])
 }

@@ -179,7 +179,15 @@ export async function createRunHold(params: {
     const fareCedis = computeRunFare(run.service, stops, boardStopId, alightStopId) * seats;
 
     const hold = await tx.seatHold.create({
-      data: { runId, boardStopId, alightStopId, seats, riderId, expiresAt: new Date(Date.now() + HOLD_TTL_MS) },
+      data: {
+        runId,
+        boardStopId,
+        alightStopId,
+        seats,
+        riderId,
+        fareCedis,
+        expiresAt: new Date(Date.now() + HOLD_TTL_MS),
+      },
     });
 
     return { hold, fareCedis };
@@ -225,11 +233,12 @@ export async function createPartnerHold(params: { tripId: string; seats: number;
     const held = holds.reduce((sum, h) => sum + h.seats, 0);
     if (trip.seatsTotal - held < seats) throw new InventoryError('full', 'Not enough seats on this trip');
 
+    const fareCedis = trip.farePerSeatCedis * seats;
     const hold = await tx.partnerSeatHold.create({
-      data: { tripId, seats, riderId, expiresAt: new Date(Date.now() + HOLD_TTL_MS) },
+      data: { tripId, seats, riderId, fareCedis, expiresAt: new Date(Date.now() + HOLD_TTL_MS) },
     });
 
-    return { hold, fareCedis: trip.farePerSeatCedis * seats };
+    return { hold, fareCedis };
   });
 }
 

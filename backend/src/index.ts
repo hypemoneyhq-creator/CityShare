@@ -2,6 +2,7 @@ import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import { authRouter } from './routes/auth';
+import { bookingsRouter } from './routes/bookings';
 import { corridorsRouter } from './routes/corridors';
 import { inventoryRouter } from './routes/inventory';
 import { partnerTripsRouter } from './routes/partnerTrips';
@@ -15,6 +16,7 @@ app.use('/api/auth', authRouter);
 app.use('/api', corridorsRouter);
 app.use('/api', inventoryRouter);
 app.use('/api', partnerTripsRouter);
+app.use('/api', bookingsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'not_found' });
