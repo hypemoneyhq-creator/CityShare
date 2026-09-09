@@ -14,8 +14,8 @@ datasource db {
 // once the Partner onboarding flow is built.
 
 model User {
-  id        String   @id @default(uuid())
-  phone     String   @unique
+  id        String  @id @default(uuid())
+  phone     String  @unique
   firstName String?
   lastName  String?
 
@@ -30,22 +30,31 @@ model User {
   // Ops-only escrow actions (resolving a dispute, marking a no-show,
   // settling) are gated on this flag directly for now.
   isOps     Boolean @default(false)
-  // Stand-in for Express driver identity (spec: drivers are employed by
-  // an Operator, vetted through them, not independently onboarded — but
-  // Operators are step 10). Set directly, like isPartner/isOps, until
-  // that onboarding exists.
+  // Express driver identity (spec: drivers are employed by an Operator,
+  // vetted through them, not independently onboarded). Step 10 gives this
+  // its real backing (operatorId, set when an Operator adds someone to
+  // their roster) but `become-driver` (step 8) still sets this flag
+  // directly for a driver with no operator yet — documented as a
+  // deliberately-kept self-service path alongside the real one, not a
+  // stand-in that got replaced.
   isDriver  Boolean @default(false)
+
+  // The Operator this driver is employed by, if any (see Operator model).
+  // Null for a self-declared step-8 driver with no roster relationship.
+  operator   Operator? @relation(fields: [operatorId], references: [id])
+  operatorId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  otps             PhoneOtp[]
-  seatHolds        SeatHold[]
-  partnerTrips     PartnerTrip[]
-  partnerSeatHolds PartnerSeatHold[]
-  paymentIntents   PaymentIntent[]
-  bookings         Booking[]
-  assignedRuns     Run[]             @relation("RunDriver")
+  otps                PhoneOtp[]
+  seatHolds           SeatHold[]
+  partnerTrips        PartnerTrip[]
+  partnerSeatHolds    PartnerSeatHold[]
+  paymentIntents      PaymentIntent[]
+  bookings            Booking[]
+  assignedRuns        Run[]             @relation("RunDriver")
+  operatorApplication Operator?         @relation("OperatorContact")
 }
 
 // One-time SMS codes for phone verification. Kept as its own table (rather
@@ -79,8 +88,9 @@ model Corridor {
 
   createdAt DateTime @default(now())
 
-  services     Service[]
-  partnerTrips PartnerTrip[]
+  services          Service[]
+  partnerTrips      PartnerTrip[]
+  operatorInterests OperatorCorridorInterest[]
 }
 
 enum ServiceType {
@@ -152,6 +162,11 @@ model Run {
   serviceId String
   date      DateTime
   status    RunStatus @default(SCHEDULED)
+
+  // The Operator vehicle unit assigned to this run (step 10's Operator
+  // console). Was a bare unused String field through steps 1-9 — nothing
+  // ever set or read it, since there was no vehicle entity to reference.
+  vehicle   OperatorVehicle? @relation(fields: [vehicleId], references: [id])
   vehicleId String?
 
   driver   User?   @relation("RunDriver", fields: [driverId], references: [id])
@@ -177,20 +192,20 @@ model Run {
 // clientTimestamp-aware like everything else driver-tapped, for the same
 // offline reason.
 model RunStopEvent {
-  id          String    @id @default(uuid())
-  run         Run       @relation(fields: [runId], references: [id])
-  runId       String
-  stopId      String
-  arrivedAt   DateTime?
-  departedAt  DateTime?
-  createdAt   DateTime  @default(now())
+  id         String    @id @default(uuid())
+  run        Run       @relation(fields: [runId], references: [id])
+  runId      String
+  stopId     String
+  arrivedAt  DateTime?
+  departedAt DateTime?
+  createdAt  DateTime  @default(now())
 
   @@unique([runId, stopId])
 }
 
 // "An incident report sheet that pushes position and manifest to ops"
-// (spec section 8 screens). There's no ops dashboard yet to push to
-// (step 9) — this is just the record it will read.
+// (spec section 8 screens) — read by the ops dashboard's live summary
+// (step 9) via RunStopEvent; this table itself isn't surfaced there yet.
 model RunIncident {
   id        String   @id @default(uuid())
   run       Run      @relation(fields: [runId], references: [id])
@@ -202,6 +217,102 @@ model RunIncident {
   createdAt DateTime @default(now())
 
   @@index([runId])
+}
+
+// --- Express Operators ----------------------------------------------------
+// A transport company that supplies vehicles and drivers for Express runs
+// (spec section 9: "you provide vehicles, drivers, insurance; CityShare
+// provides demand, inventory, payments"). Everywhere else in this codebase
+// an "Operator" was a stand-in (isDriver/isPartner flags set directly) —
+// this is the real entity those stand-ins were waiting on.
+//
+// One Operator per contact User (contactUserId), the same
+// single-owner-per-entity pattern PartnerTrip.partnerId already uses —
+// there's no multi-seat company-account model here.
+
+enum OperatorStatus {
+  APPLICATION
+  CERTIFYING
+  CERTIFIED
+  // No route sets this yet — a real ops review flow (like the certification
+  // checks below) would need to exist to revoke certification, and step 9's
+  // ops dashboard doesn't have that action. Kept for completeness alongside
+  // the corridor-level suspension the ops dashboard scorecard design shows.
+  SUSPENDED
+}
+
+model Operator {
+  id             String  @id @default(uuid())
+  registeredName String
+  rgdNumber      String?
+  operatingSince Int?
+  contactName    String?
+
+  contactUser   User   @relation("OperatorContact", fields: [contactUserId], references: [id])
+  contactUserId String @unique
+
+  status      OperatorStatus @default(APPLICATION)
+  submittedAt DateTime?
+  createdAt   DateTime       @default(now())
+
+  vehicles          OperatorVehicle[]
+  corridorInterests OperatorCorridorInterest[]
+  documents         OperatorDocument[]
+  drivers           User[]
+}
+
+// An individually assignable vehicle (not an aggregate fleet count like
+// the design's "4x Hyundai H1" application-step table — a real run
+// assignment needs a specific vehicle, so this build tracks units
+// directly, one row per vehicle, grouped by type only for display).
+model OperatorVehicle {
+  id          String   @id @default(uuid())
+  operator    Operator @relation(fields: [operatorId], references: [id])
+  operatorId  String
+  label       String // e.g. "H1-07" — plate or fleet number
+  vehicleType String // e.g. "Hyundai H1 · 11-seater"
+  spec        String // e.g. "AC · WIFI · INSURED · TRACKED"
+  seats       Int
+  createdAt   DateTime @default(now())
+
+  runs Run[]
+}
+
+// Which corridors an Operator wants to serve. Real and DB-driven — unlike
+// the design's chip list (Western/Northwestern/Eastern/Madina, most of
+// which aren't seeded corridors here), this only ever lists corridors
+// that actually exist in this database.
+model OperatorCorridorInterest {
+  id         String   @id @default(uuid())
+  operator   Operator @relation(fields: [operatorId], references: [id])
+  operatorId String
+  corridor   Corridor @relation(fields: [corridorId], references: [id])
+  corridorId String
+  createdAt  DateTime @default(now())
+
+  @@unique([operatorId, corridorId])
+}
+
+enum OperatorDocKey {
+  RGD_CERTIFICATE
+  TRANSPORT_LICENCE
+  DRIVER_ROSTER
+  INSURANCE_ENDORSEMENT
+  SAFETY_STANDARD_AGREEMENT
+}
+
+// Mock upload, same pattern as identity verification since step 1 (an
+// instant "uploaded" timestamp, no real file storage or review) — see
+// backend README blockers for why a real document pipeline isn't built.
+model OperatorDocument {
+  id         String         @id @default(uuid())
+  operator   Operator       @relation(fields: [operatorId], references: [id])
+  operatorId String
+  key        OperatorDocKey
+  uploadedAt DateTime?
+  createdAt  DateTime       @default(now())
+
+  @@unique([operatorId, key])
 }
 
 enum HoldStatus {
@@ -221,9 +332,9 @@ enum HoldStatus {
 // (flipped to EXPIRED) the next time availability is computed; there is
 // no background sweep yet.
 model SeatHold {
-  id      String @id @default(uuid())
-  run     Run    @relation(fields: [runId], references: [id])
-  runId   String
+  id    String @id @default(uuid())
+  run   Run    @relation(fields: [runId], references: [id])
+  runId String
 
   boardStopId  String
   alightStopId String
@@ -253,8 +364,8 @@ model SeatHold {
 // Express Stops. Partner onboarding (vehicle documents, comfort facts
 // capture) is not built yet; isPartner is set directly for now.
 model PartnerTrip {
-  id        String   @id @default(uuid())
-  partner   User     @relation(fields: [partnerId], references: [id])
+  id        String @id @default(uuid())
+  partner   User   @relation(fields: [partnerId], references: [id])
   partnerId String
 
   corridor   Corridor? @relation(fields: [corridorId], references: [id])
@@ -286,9 +397,9 @@ model PartnerTrip {
 }
 
 model PartnerSeatHold {
-  id      String      @id @default(uuid())
-  trip    PartnerTrip @relation(fields: [tripId], references: [id])
-  tripId  String
+  id     String      @id @default(uuid())
+  trip   PartnerTrip @relation(fields: [tripId], references: [id])
+  tripId String
 
   seats  Int
   status HoldStatus @default(PENDING)
@@ -434,13 +545,13 @@ model BookingTransfer {
 // vehicle's route"). Append-only, client-timestamped for the same
 // offline reason as the boarding taps.
 model LocationPing {
-  id        String   @id @default(uuid())
-  booking   Booking  @relation(fields: [bookingId], references: [id])
-  bookingId String
-  lat       Float
-  lng       Float
+  id         String   @id @default(uuid())
+  booking    Booking  @relation(fields: [bookingId], references: [id])
+  bookingId  String
+  lat        Float
+  lng        Float
   recordedAt DateTime
-  createdAt DateTime @default(now())
+  createdAt  DateTime @default(now())
 
   @@index([bookingId])
 }

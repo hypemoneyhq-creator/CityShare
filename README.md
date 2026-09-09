@@ -6,7 +6,7 @@ certified Express Operators on one marketplace, paid by Mobile Money into
 escrow that only releases once both rider and driver confirm boarding.
 
 This repo is being built from a design handoff following the build order
-in the handoff spec. Current status: **step 9** — the ops dashboard.
+in the handoff spec. Current status: **all 10 steps complete.**
 
 - [`backend/`](backend/README.md) — Node.js/TypeScript/Express API +
   PostgreSQL (Prisma): phone + Ghana Card verification, corridor/service/
@@ -15,8 +15,10 @@ in the handoff spec. Current status: **step 9** — the ops dashboard.
   payment provider behind it, GPS-verified two-sided boarding with an
   offline-safe tap queue, the cancellation/reassignment/no-show policy
   engine, real driver identity driving the Express run lifecycle plus
-  Partner trip management, and the ops dashboard's read layer (live
-  summary, dispute queue, corridor overview).
+  Partner trip management, the ops dashboard's read layer (live summary,
+  dispute queue, corridor overview), and the real Express Operator entity
+  — application, certification, fleet/driver roster, the operator
+  console, and real payouts for Express bookings.
 - [`mobile/`](mobile/README.md) — Expo/React Native app: phone/ID
   verification, the rider-facing search → results → trip detail → pay →
   digital ticket flow, Partner mode (list a trip, manage passengers,
@@ -27,6 +29,11 @@ in the handoff spec. Current status: **step 9** — the ops dashboard.
   network status, the boarding-dispute queue, and corridor/stop
   profiles — a separate desktop web app, matching the design handoff's
   own 1440px layout for this screen.
+- [`operators/`](operators/README.md) — Vite/React/TypeScript Express
+  Operator portal: apply, get certified, and run the day-to-day operator
+  console (assign vehicles and drivers to runs, track load/on-time/
+  payout) — another separate desktop web app, for a different audience
+  (transport companies) than `ops/` (CityShare staff).
 
 ## Build order
 
@@ -51,7 +58,11 @@ in the handoff spec. Current status: **step 9** — the ops dashboard.
 9. **Ops dashboard** ✅ (backend: live summary, dispute queue, corridor
    overview endpoints; a new `ops/` Vite/React web app for Live ops,
    Escrow & disputes, and Corridors & stops)
-10. Express Operator portal
+10. **Express Operator portal** ✅ (backend: the real `Operator` entity —
+    application, computed certification, fleet/driver roster, the
+    operator console, and RUN-booking payouts wired to it; a new
+    `operators/` Vite/React web app for Why operate, Apply, Certification
+    and Operator console)
 
 ## Known blockers (not code — see design handoff for detail)
 

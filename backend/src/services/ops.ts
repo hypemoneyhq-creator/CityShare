@@ -1,7 +1,7 @@
 import { BookingKind, EscrowState, RunStatus } from '@prisma/client';
 import { prisma } from '../db';
 
-function startOfToday(): Date {
+export function startOfToday(): Date {
   const d = new Date();
   d.setUTCHours(0, 0, 0, 0);
   return d;
@@ -12,7 +12,7 @@ function startOfToday(): Date {
 // — arrived-but-not-departed means at that stop (boarding), departed
 // means in transit toward the next one. There's no fleet/vehicle entity
 // yet, so this describes the run, not a named vehicle.
-function describeRunStatus(
+export function describeRunStatus(
   run: { status: RunStatus },
   stops: { id: string; name: string; sequence: number }[],
   events: { stopId: string; arrivedAt: Date | null; departedAt: Date | null }[],

@@ -1,0 +1,184 @@
+/* Design tokens transcribed from CityShare Operations.dc.html and
+   mobile/src/theme/tokens.ts, so the three surfaces (rider app, driver
+   app, ops dashboard) share one palette. */
+:root {
+  --ink: #171a17;
+  --paper: #f5f4f0;
+  --page-bg: #e6e4dd;
+  --card: #ffffff;
+
+  --green: #278733;
+  --green-tint: #eaf6ea;
+  --green-chip-bg: #e6f6e8;
+  --green-chip-ink: #1f6b2b;
+
+  --amber-bg: #f8f0e6;
+  --amber-ink: #8a7130;
+  --amber-border: #e0cfa8;
+
+  --red-chip-bg: #fbeaea;
+  --red-chip-ink: #a33a3a;
+
+  --tan: #b9a97f;
+
+  --muted: #8b8e86;
+  --muted-strong: #6d736c;
+  --border: #eeedea;
+  --border-strong: #ddd9d0;
+  --row-bg: #fbfaf8;
+
+  --sidebar-bg: #171a17;
+  --sidebar-active-bg: #2b3029;
+  --sidebar-ink: #f5f4f0;
+  --sidebar-muted: #9aa09a;
+  --sidebar-border: #4a5145;
+
+  --font-display: 'Outfit', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--page-bg);
+  font-family: var(--font-display);
+  color: var(--ink);
+}
+
+button {
+  font-family: inherit;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.card {
+  background: var(--card);
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.card-header {
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.card-kicker {
+  font: 600 10px var(--font-mono);
+  letter-spacing: 0.13em;
+  color: var(--muted);
+}
+
+.card-note {
+  font: 400 11px var(--font-display);
+  color: var(--muted);
+}
+
+.card-footnote {
+  padding: 15px 18px;
+  font: 400 12px/1.5 var(--font-display);
+  color: var(--muted-strong);
+  background: var(--row-bg);
+}
+
+.stat-card {
+  background: var(--card);
+  border-radius: 12px;
+  padding: 15px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.stat-label {
+  font: 500 9.5px var(--font-mono);
+  letter-spacing: 0.11em;
+  color: var(--muted);
+}
+
+.stat-value {
+  font: 600 27px var(--font-mono);
+  letter-spacing: -0.03em;
+}
+
+.stat-sub {
+  font: 400 11px var(--font-display);
+  color: var(--muted-strong);
+}
+
+.chip {
+  font: 500 9.5px var(--font-mono);
+  letter-spacing: 0.05em;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.chip-green {
+  background: var(--green-chip-bg);
+  color: var(--green-chip-ink);
+}
+
+.chip-amber {
+  background: var(--amber-bg);
+  color: var(--amber-ink);
+}
+
+.chip-red {
+  background: var(--red-chip-bg);
+  color: var(--red-chip-ink);
+}
+
+.chip-neutral {
+  background: var(--row-bg);
+  color: var(--muted-strong);
+  border: 1px solid var(--border-strong);
+}
+
+.btn {
+  border: none;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font: 600 11.5px var(--font-display);
+  cursor: pointer;
+}
+
+.btn-dark {
+  background: var(--ink);
+  color: #fff;
+}
+
+.btn-dark:disabled {
+  background: #c3c5bf;
+  cursor: default;
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--ink);
+}
+
+.error-text {
+  color: #a33a3a;
+  font: 500 12.5px var(--font-display);
+}

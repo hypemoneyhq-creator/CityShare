@@ -70,7 +70,7 @@ async function loadBookingOrThrow(bookingId: string) {
     include: {
       escrow: true,
       paymentIntent: true,
-      runHold: true,
+      runHold: { include: { run: { include: { vehicle: true } } } },
       partnerHold: { include: { trip: { include: { partner: { select: { firstName: true, lastName: true } } } } } },
     },
   });
@@ -402,10 +402,10 @@ export async function markNoShow(bookingId: string, actorType: EscrowActorType, 
 // OPEN in the spec: whether FORFEIT pays the driver in full, partially,
 // or not at all is an unresolved legal/tax question. This does not
 // decide it — `payoutAmountCedis` is a caller-supplied choice, not a
-// policy this code invents. For a RUN booking there is also no payee yet
-// (Express drivers are employed by an Operator — an earnings/payout
-// ledger for that is steps 9/10), so only the state transition happens;
-// wiring an actual payout call is deferred to when that exists.
+// policy this code invents. For a RUN booking the payee is the Operator
+// whose vehicle was assigned to the run (step 10) — a run with no
+// assigned vehicle still has no payee, same as every step before this
+// one, and settlement still proceeds with just the state transition.
 export async function settleBooking(bookingId: string, opsId: string, payoutAmountCedis: number) {
   const booking = await loadBookingOrThrow(bookingId);
   const fromState = booking.escrow!.state;
@@ -415,6 +415,11 @@ export async function settleBooking(bookingId: string, opsId: string, payoutAmou
 
   if (booking.kind === BookingKind.PARTNER && payoutAmountCedis > 0) {
     await paymentProvider.payout(booking.partnerHold!.trip.partnerId, payoutAmountCedis, `booking:${bookingId}`);
+  } else if (booking.kind === BookingKind.RUN && payoutAmountCedis > 0) {
+    const operatorId = booking.runHold?.run.vehicle?.operatorId;
+    if (operatorId) {
+      await paymentProvider.payout(operatorId, payoutAmountCedis, `booking:${bookingId}`);
+    }
   }
 
   await transitionEscrow({

@@ -1,6 +1,6 @@
 # CityShare backend
 
-Steps 1-9 of the build order from the design handoff: identity & phone
+All 10 steps of the build order from the design handoff: identity & phone
 verification, the corridor -> service -> stop -> run data model, seat
 inventory including per-segment Express Stops, the escrow ledger and
 state machine, the API surface the mobile app's booking flow is built
@@ -8,8 +8,10 @@ against, GPS-verified two-sided boarding with an offline tap queue, the
 cancellation / reassignment / no-show policy engine, real driver identity
 driving the Express run lifecycle (assignment, dwell tracking,
 depart/no-show, incidents) plus Partner trip management (manifest,
-no-show, earnings), and the ops dashboard's read layer (live network
-summary, the dispute queue, corridor/stop overview).
+no-show, earnings), the ops dashboard's read layer (live network summary,
+the dispute queue, corridor/stop overview), and the Express Operator
+entity — application, certification, fleet/driver roster, the operator
+console, and real payouts for Express bookings.
 
 ## Stack
 
@@ -40,7 +42,7 @@ The server listens on `PORT` (default 4000).
 | POST | `/api/auth/identity` | Bearer | Submit Ghana Card number + selfie (mock match) |
 | GET | `/api/auth/me` | Bearer | Current user + verification status |
 | POST | `/api/auth/become-partner` | Bearer | Stand-in for Partner onboarding (not built yet) |
-| POST | `/api/auth/become-driver` | Bearer | Stand-in for Express driver onboarding (not built yet) |
+| POST | `/api/auth/become-driver` | Bearer | Self-service driver flag, kept alongside the real Operator-roster path (step 10) as a lighter stand-in |
 | GET | `/api/corridors` | — | List corridors with their active services |
 | GET | `/api/services/:id` | — | One service with its ordered stop profiles |
 | GET | `/api/services/:id/runs?date=YYYY-MM-DD` | — | Runs for a service |
@@ -85,6 +87,18 @@ The server listens on `PORT` (default 4000).
 | GET | `/api/ops/summary` | Bearer, ops | Live escrow position, today's run/vehicle status, on-time %, seat utilization, corridor capacity |
 | GET | `/api/ops/disputes` | Bearer, ops | The open boarding-dispute queue with real evidence chips |
 | GET | `/api/ops/corridors` | Bearer, ops | Corridors -> services -> stop profiles, with today's run counts |
+| POST | `/api/operators/application` | Bearer | Create/update the caller's Operator application (one per contact user) |
+| GET | `/api/operators/mine` | Bearer | The caller's Operator profile: fleet, corridor interests, documents, roster, readiness |
+| POST | `/api/operators/vehicles` | Bearer, has an application | Add a vehicle unit: `{label, vehicleType, spec, seats}` |
+| DELETE | `/api/operators/vehicles/:id` | Bearer, owning Operator | Remove a vehicle unit |
+| POST | `/api/operators/corridors/:corridorId` | Bearer, has an application | Toggle interest in a corridor: `{on}` |
+| POST | `/api/operators/documents/:key` | Bearer, has an application | Toggle a mock document upload |
+| POST | `/api/operators/submit` | Bearer, has an application | `APPLICATION` -> `CERTIFYING`, once fleet/corridors/documents are complete |
+| GET | `/api/operators/certification` | Bearer, has an application | Real certification checks; lazily resolves to `CERTIFIED` once all clear |
+| POST | `/api/operators/drivers` | Bearer, has an application | Add a verified CityShare user (by phone) to the driver roster |
+| DELETE | `/api/operators/drivers/:userId` | Bearer, owning Operator | Remove a driver from the roster |
+| GET | `/api/operators/console` | Bearer, `CERTIFIED` Operator | Today's runs on the Operator's corridors, real load/on-time/payout figures |
+| POST | `/api/operators/runs/:runId/assign` | Bearer, `CERTIFIED` Operator | Assign one of the Operator's own vehicles (and optionally a roster driver) to a run |
 
 ## Data model
 
@@ -147,9 +161,10 @@ just poll instead of needing a webhook. Test control (no real network to
 drive from): a rider phone ending `0000` gets a mock `DECLINED`, `9999`
 gets `TIMEOUT` at exactly 90s, anything else is `APPROVED` after a
 3-8s delay — or pass `forceOutcome` directly in the `/pay` request body.
-`getBalance` is a stub (`{ available: 0, held: 0 }`) — there's no
-per-account earnings ledger yet (that's the Operator/Partner payout
-ledger, steps 9-10).
+`getBalance` is a stub (`{ available: 0, held: 0 }`) — per-account earnings
+are read from `Payout` rows directly instead (see the Partner earnings
+and Operator console sections below), which is what actually backs those
+screens.
 
 `src/services/booking.ts` is the orchestration layer that ties a paid
 hold to a `Booking` + `Escrow`, and holds the two remaining pieces the
@@ -257,8 +272,9 @@ exist yet.
 ### Driver identity and the Express run lifecycle (spec section 6)
 
 `src/services/driver.ts` gives the run lifecycle a real actor: `isDriver`
-plus a run's `driverId` (set by ops via `assign-driver`, since there's no
-Operator roster or scheduling yet — step 10 owns that). Everything here
+plus a run's `driverId` (set by ops via `assign-driver`, or — since step
+10 — by an Operator assigning their own roster driver via
+`POST /operators/runs/:id/assign`). Everything here
 is scoped to `requireAssignedRun`, so a driver can only start, arrive,
 depart, report on, or complete a run they were actually assigned to —
 `startRun` moves a run `ASSIGNED -> IN_PROGRESS`, and `completeRun` moves
@@ -285,8 +301,10 @@ already verified by `requireAssignedRun`), now generalized to accept
 Incidents (`reportIncident`) are a flat append — `RunIncident` with a
 category from the design's five (`heavy_traffic`, `vehicle_fault`,
 `stop_blocked`, `passenger_issue`, `accident_sos`), an optional note and
-GPS. Nothing consumes them yet (no ops dashboard, no rider delay
-notification) — this is the write side of a queue step 9 will read.
+GPS. Nothing reads this table back yet (no rider delay notification, and
+the ops dashboard's live summary reads `RunStopEvent` rather than
+`RunIncident`) — it's the write side of a queue a future ops incident
+view would read.
 
 The GPS coordinates a driver's boarding tap needs (spec section 4) come
 from the stop itself: `GET /runs/:id/segments` now returns each stop's
@@ -320,9 +338,9 @@ other endpoint ever asks the provider about it again. The earnings route
 now resolves every pending payout for the caller before aggregating.
 
 Not implemented: cash-out to Mobile Money (the mobile earnings screen
-shows why), and any Operator entity at all — every "Operator" role in
-this step's code is really `User.isPartner`/`isDriver` standing in for
-it, same pattern as `isOps` since step 4.
+shows why). "Operator" in this step's code is still really
+`User.isPartner`/`isDriver` standing in for it — the real `Operator`
+entity is step 10, below.
 
 ### Ops dashboard (spec section 9, screens: Live ops / Escrow & disputes / Corridors & stops)
 
@@ -366,9 +384,90 @@ grants themselves, not for the role that resolves disputes over their own
 money.
 
 Not implemented: the Express Operator scorecard (ratings, suspend-per-
-corridor) — no Operator entity exists yet (step 10), so there is nothing
-real to show there; a corridor/service editor (the ops dashboard's
-"Corridors & stops" tab is read-only, same as everywhere else schedule
-data is only changed via `prisma/seed.ts` or a migration); and any
-history beyond "today" — every figure in `getLiveSummary` is a same-day
-snapshot, not a time series.
+corridor) — the real `Operator` entity exists as of step 10 below, but
+this step's `ops.ts` was never revisited to read it, and there's still no
+rider-rating system anywhere in this codebase to show a rating from; a
+corridor/service editor (the ops dashboard's "Corridors & stops" tab is
+read-only, same as everywhere else schedule data is only changed via
+`prisma/seed.ts` or a migration); and any history beyond "today" — every
+figure in `getLiveSummary` is a same-day snapshot, not a time series.
+
+### Express Operators (spec section 9's counterpart, screens: Why operate / Apply / Certification / Operator console)
+
+The last step gives "Operator" a real entity — `src/services/operator.ts`
+— closing three things every earlier step explicitly deferred rather than
+faked: driver employment (`User.operatorId`), the always-null `Run.vehicleId`
+field declared in step 3 and never once read or written before now, and
+`settleBooking`'s RUN-kind payout, whose own comment through steps 4-9
+said "no payee yet... wiring an actual payout call is deferred to when
+that exists." One Operator per contact user (`Operator.contactUserId`),
+the same single-owner simplification `PartnerTrip.partnerId` already
+makes for Partners.
+
+**Application and fleet.** `upsertApplication` creates or updates the
+company record; `addVehicle`/`removeVehicle` manage individually
+assignable `OperatorVehicle` units rather than the design's aggregate
+"4x Hyundai H1" count — a real run assignment needs one specific vehicle,
+which an aggregate count can't provide. `setCorridorInterest` is a real,
+DB-backed toggle: unlike the design's Northwestern/Eastern/Madina
+example chips, only corridors that actually exist here can ever appear.
+`toggleDocument` mocks a document upload the same instant-match way
+identity verification has since step 1 (an `uploadedAt` timestamp, no
+real file storage) — see the root README's blockers list for why a real
+document pipeline isn't built. `submitApplication` gates on real
+readiness (at least one vehicle, one corridor, all five documents) and
+moves `APPLICATION -> CERTIFYING`.
+
+**Certification is computed, not reviewed.** `getCertification` has no
+ops-side "review this application" queue to drive it — step 9's
+dashboard doesn't cover Operator applications — so its five checks
+resolve from data this build already has: company registration, transport
+licence, insurance and the Safety Standard agreement clear the instant
+their document uploads; driver vetting is the real ratio of the
+Operator's roster who have completed identity verification (Ghana Card +
+selfie, from step 1) — there's no separate driver-specific vetting step,
+so identity verification stands in for it. The design's "fleet inspection"
+and "scheduling walkthrough" checks are dropped rather than invented:
+neither has any real signal in this codebase. When every check clears,
+`getCertification` itself flips `CERTIFYING -> CERTIFIED` — the same
+lazy-resolution pattern as a payment intent or a seat hold: whoever next
+asks is what advances it, no background job, no human approval step.
+
+**Driver roster management lives on the Certification screen, not the
+console** — a genuine circular dependency would exist otherwise: the
+console is gated on `CERTIFIED`, and certification's driver-vetting check
+needs a roster to exist before that gate can open. `addDriver` looks up a
+recipient by phone (same pattern as `reassignBooking`) and requires them
+to already be a verified CityShare user; it does not create an account or
+grant `isDriver` to someone who wasn't already real.
+
+**The console** (`getConsole`, gated on `CERTIFIED`) shows today's runs
+for the Operator's requested corridors — both their own assigned runs
+and any still-`Unassigned` ones on those corridors, open to claim.
+`assignRunVehicle` is the boundary a real multi-operator corridor
+allocator would otherwise enforce (there isn't one — no competition
+between operators for the same corridor is modeled): it only lets an
+Operator assign their own vehicle to a run on a corridor they've actually
+requested, and only a driver already on their own roster. Seats sold,
+load factor and on-time departure are computed only from runs actually
+assigned to the Operator's vehicles — an unclaimed run doesn't count
+toward anyone's numbers. The design's console also shows a rider-rating
+stat and a "corridor offers from CityShare" panel sized from unmet-search
+data; both are dropped for the same reasons the ops dashboard drops
+them — no rating system anywhere in this codebase, and no ops-side
+offer-creation workflow to size a real offer from.
+
+**Payouts now reach a real payee.** `settleBooking` for a RUN booking
+looks up `booking.runHold.run.vehicle.operatorId` and pays out there,
+exactly like it already did for a Partner booking's `partnerId` — a run
+with no assigned vehicle still has no payee, same as every step before
+this one, so nothing regresses for data that predates this step.
+
+Not implemented: Operator suspension (the `SUSPENDED` status exists on
+the enum for parity with the ops dashboard scorecard design, but no route
+sets it — that needs the ops-side review flow this step doesn't build);
+multi-operator competition for the same corridor (whichever Operator
+requests a corridor can assign any of that corridor's unclaimed runs —
+there's no CityShare-side allocation decision between competing
+Operators); and a real document pipeline (uploads are still the same
+instant-mock pattern as every verification step before this one).
